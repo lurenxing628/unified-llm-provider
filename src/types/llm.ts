@@ -85,6 +85,26 @@ export interface LLMRawErrorInfo {
   data?: string;
   /** SSE JSON 解析后的原始块。 */
   rawChunk?: unknown;
+  /** 上游结构化错误码，例如 OpenAI WebSocket error event 的 error.code。 */
+  code?: string;
+  /** 传输类型。当前仅 WebSocket 错误需要额外标记。 */
+  transport?: 'websocket';
+  /** WebSocket 请求失败时所处的阶段。 */
+  phase?: 'connecting' | 'sending_response_create' | 'awaiting_first_event' | 'streaming';
+  /** WebSocket 标准关闭码。 */
+  closeCode?: number;
+  /** WebSocket 服务端关闭原因。 */
+  closeReason?: string;
+  /** WebSocket CloseEvent.wasClean。 */
+  closeWasClean?: boolean;
+  /** 关闭或读取失败前是否已经收到过服务端事件。 */
+  receivedServerEvent?: boolean;
+  /** 当前物理连接尝试序号，从 1 开始。 */
+  attempt?: number;
+  /** 当前请求允许的最大物理连接尝试数。 */
+  maxAttempts?: number;
+  /** 该错误是否适合由上层策略再次尝试。 */
+  retryable?: boolean;
   /** 本库内部解析/读取失败时的错误文本；不替代 rawBody/rawChunk。 */
   message?: string;
 }
