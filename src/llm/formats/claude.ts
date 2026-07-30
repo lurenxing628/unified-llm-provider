@@ -5,7 +5,7 @@
  */
 
 import {
-  LLMRequest, LLMResponse, LLMStreamChunk, Part, FunctionCallPart, FunctionResponsePart,
+  LLMRequest, LLMResponse, LLMStreamChunk, Part, FunctionCallPart, FunctionResponsePart, InlineDataPart,
   isTextPart, isVisibleTextPart, isInlineDataPart, isFunctionCallPart, isFunctionResponsePart,
 } from '../../types.js';
 import type { LLMPromptCacheConfig, LLMPromptCacheTtl } from '../../config/types.js';
@@ -125,16 +125,11 @@ export class ClaudeFormat implements FormatAdapter {
             if (isTextPart(part) && part.thought !== true && part.text) {
               contentBlocks.push({ type: 'text', text: part.text });
             } else if (isInlineDataPart(part)) {
-              hasStructuredContent = true;
-              const mime = part.inlineData.mimeType;
-              contentBlocks.push({
-                type: 'document',
-                source: {
-                  type: 'base64',
-                  media_type: mime,
-                  data: part.inlineData.data,
-                },
-              });
+              const mediaBlock = encodeClaudeInlineDataMediaBlock(part.inlineData);
+              if (mediaBlock) {
+                hasStructuredContent = true;
+                contentBlocks.push(mediaBlock);
+              }
             }
           }
 
@@ -539,7 +534,10 @@ function encodeClaudeToolResultContent(response: FunctionResponsePart['functionR
 }
 
 function encodeClaudeToolResultMediaBlock(part: NonNullable<FunctionResponsePart['functionResponse']['parts']>[number]): Record<string, unknown> | undefined {
-  const inlineData = part.inlineData;
+  return encodeClaudeInlineDataMediaBlock(part.inlineData);
+}
+
+function encodeClaudeInlineDataMediaBlock(inlineData: Pick<InlineDataPart['inlineData'], 'mimeType' | 'data'>): Record<string, unknown> | undefined {
   const mime = inlineData.mimeType;
   if (isToolResponseImageMimeType(mime)) {
     return {
