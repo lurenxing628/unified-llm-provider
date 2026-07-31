@@ -59,6 +59,7 @@ interface OpenAIResponsesWebSocketErrorMetadata {
   receivedServerEvent?: boolean;
   attempt?: number;
   maxAttempts?: number;
+  transportAttemptsExhausted?: boolean;
   retryable?: boolean;
 }
 
@@ -180,7 +181,6 @@ export async function* streamOpenAIResponsesWebSocket(
           attempt + 1,
           'connecting',
           false,
-          attempt + 1,
         );
         invalidateSessionState(session);
         allowIncremental = false;
@@ -245,6 +245,7 @@ export async function* streamOpenAIResponsesWebSocket(
               receivedServerEvent: true,
               attempt: attempt + 1,
               maxAttempts: OPENAI_RESPONSES_WS_MAX_REQUEST_ATTEMPTS,
+              transportAttemptsExhausted: attempt + 1 >= OPENAI_RESPONSES_WS_MAX_REQUEST_ATTEMPTS,
               retryable: false,
             });
             return;
@@ -262,7 +263,6 @@ export async function* streamOpenAIResponsesWebSocket(
           attempt + 1,
           sawServerEvent ? 'streaming' : 'awaiting_first_event',
           sawServerEvent,
-          canRetryWithinTransport ? OPENAI_RESPONSES_WS_MAX_REQUEST_ATTEMPTS : attempt + 1,
         );
         if (canRetryWithinTransport) {
           shouldRetryFull = true;
@@ -1263,6 +1263,7 @@ function errorInfoFromPayload(payload: unknown, rawChunk: unknown, attempt: numb
     receivedServerEvent: true,
     attempt,
     maxAttempts: OPENAI_RESPONSES_WS_MAX_REQUEST_ATTEMPTS,
+    transportAttemptsExhausted: attempt >= OPENAI_RESPONSES_WS_MAX_REQUEST_ATTEMPTS,
     ...(status !== undefined ? { status } : {}),
     ...(code ? { code } : {}),
     ...(retryable !== undefined ? { retryable } : {}),
@@ -1416,14 +1417,14 @@ function withWebSocketAttemptContext(
   attempt: number,
   phase: OpenAIResponsesWebSocketPhase,
   receivedServerEvent: boolean,
-  maxAttempts = OPENAI_RESPONSES_WS_MAX_REQUEST_ATTEMPTS,
 ): Error {
   const contextual = error as Error & OpenAIResponsesWebSocketErrorMetadata;
   contextual.transport = 'websocket';
   contextual.phase ??= phase;
   contextual.receivedServerEvent ??= receivedServerEvent;
   contextual.attempt = attempt;
-  contextual.maxAttempts = maxAttempts;
+  contextual.maxAttempts = OPENAI_RESPONSES_WS_MAX_REQUEST_ATTEMPTS;
+  contextual.transportAttemptsExhausted = attempt >= OPENAI_RESPONSES_WS_MAX_REQUEST_ATTEMPTS;
   contextual.retryable ??= isRetryablePreFirstEventTransportError(error);
   return contextual;
 }
@@ -1442,6 +1443,7 @@ function errorInfoFromTransportError(error: Error): LLMRawErrorInfo {
     ...(metadata.receivedServerEvent !== undefined ? { receivedServerEvent: metadata.receivedServerEvent } : {}),
     ...(metadata.attempt !== undefined ? { attempt: metadata.attempt } : {}),
     ...(metadata.maxAttempts !== undefined ? { maxAttempts: metadata.maxAttempts } : {}),
+    ...(metadata.transportAttemptsExhausted !== undefined ? { transportAttemptsExhausted: metadata.transportAttemptsExhausted } : {}),
     ...(metadata.retryable !== undefined ? { retryable: metadata.retryable } : {}),
   };
 }

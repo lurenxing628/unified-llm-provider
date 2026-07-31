@@ -101,9 +101,11 @@ export interface LLMRawErrorInfo {
   receivedServerEvent?: boolean;
   /** 当前物理连接尝试序号，从 1 开始。 */
   attempt?: number;
-  /** 当前请求允许的最大物理连接尝试数。 */
+  /** 传输层配置的最大物理连接尝试数。 */
   maxAttempts?: number;
-  /** 该错误是否适合由上层策略再次尝试。 */
+  /** 返回当前错误时，传输层是否已经实际耗尽内部连接尝试预算。 */
+  transportAttemptsExhausted?: boolean;
+  /** 该错误是否适合由调用方策略再次尝试。 */
   retryable?: boolean;
   /** 本库内部解析/读取失败时的错误文本；不替代 rawBody/rawChunk。 */
   message?: string;

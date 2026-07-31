@@ -440,7 +440,8 @@ describe('OpenAI Responses WebSocket undici transport', () => {
         code: 'network_changed',
         receivedServerEvent: true,
         attempt: 1,
-        maxAttempts: 1,
+        maxAttempts: 3,
+        transportAttemptsExhausted: false,
         retryable: true,
       });
 
@@ -587,7 +588,66 @@ describe('OpenAI Responses WebSocket undici transport', () => {
         phase: 'awaiting_first_event',
         receivedServerEvent: false,
         attempt: 1,
-        maxAttempts: 1,
+        maxAttempts: 3,
+        transportAttemptsExhausted: false,
+        retryable: true,
+      });
+      expect(chunks[0]?.error?.message).toContain('received no first event for 40ms');
+    } finally {
+      for (const client of server.clients) client.terminate();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('reports remaining transport budget when a fast disconnect is followed by a delegated first-event timeout', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('WebSocket test server did not expose a TCP port');
+
+    let connectionCount = 0;
+    server.on('connection', (socket) => {
+      const connection = ++connectionCount;
+      socket.once('message', () => {
+        if (connection === 1) {
+          socket.close(1011, 'temporary upstream failure');
+        }
+        // Keep the second connection silent until the first-event deadline.
+      });
+    });
+
+    const url = `http://127.0.0.1:${address.port}`;
+    const chunks: Array<{ error?: Record<string, unknown> }> = [];
+    const startedAt = performance.now();
+    try {
+      for await (const chunk of streamOpenAIResponsesWebSocket({
+        endpoint: {
+          url,
+          webSocketUrl: `ws://127.0.0.1:${address.port}`,
+          webSocketSessionKey: `disconnect-then-timeout-${Date.now()}-${Math.random()}`,
+          headers: {},
+        },
+        url,
+        headers: {},
+        body: { input: [] },
+        format: passthroughFormat,
+        connectTimeoutMs: 500,
+        firstEventTimeoutMs: 40,
+        responseIdleTimeoutMs: 500,
+        networkIdentityFingerprint: 'stable-network',
+      })) chunks.push(chunk as { error?: Record<string, unknown> });
+
+      expect(performance.now() - startedAt).toBeLessThan(1_000);
+      expect(connectionCount).toBe(2);
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]?.error).toMatchObject({
+        kind: 'stream_read_error',
+        transport: 'websocket',
+        phase: 'awaiting_first_event',
+        receivedServerEvent: false,
+        attempt: 2,
+        maxAttempts: 3,
+        transportAttemptsExhausted: false,
         retryable: true,
       });
       expect(chunks[0]?.error?.message).toContain('received no first event for 40ms');
@@ -701,6 +761,7 @@ describe('OpenAI Responses WebSocket undici transport', () => {
         receivedServerEvent: false,
         attempt: 3,
         maxAttempts: 3,
+        transportAttemptsExhausted: true,
         retryable: true,
       });
       expect(chunks[0]?.error?.message).toContain('1011 upstream websocket proxy failed');
@@ -810,7 +871,8 @@ describe('OpenAI Responses WebSocket undici transport', () => {
         closeReason: 'upstream websocket authentication failed',
         receivedServerEvent: false,
         attempt: 1,
-        maxAttempts: 1,
+        maxAttempts: 3,
+        transportAttemptsExhausted: false,
         retryable: false,
       });
     } finally {
@@ -873,6 +935,7 @@ describe('OpenAI Responses WebSocket undici transport', () => {
         receivedServerEvent: true,
         attempt: 1,
         maxAttempts: 3,
+        transportAttemptsExhausted: false,
         retryable: false,
       });
     } finally {
