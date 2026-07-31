@@ -18,6 +18,7 @@ export function createOpenAIResponsesProvider(config: LLMConfig): LLMProvider {
     : typeof config.endpoint?.webSocketSessionKey === 'string' && config.endpoint.webSocketSessionKey.trim()
       ? config.endpoint.webSocketSessionKey.trim()
       : undefined;
+  const webSocketOptions = config.webSocketOptions ?? config.endpoint?.webSocketOptions;
 
   return new LLMProvider(
     new OpenAIResponsesFormat(model, config.promptCache),
@@ -27,6 +28,7 @@ export function createOpenAIResponsesProvider(config: LLMConfig): LLMProvider {
       compactUrl: config.endpoint?.compactUrl || `${baseUrl}/responses/compact`,
       ...(transport === 'websocket' ? { transport, webSocketUrl: config.endpoint?.webSocketUrl || toWebSocketUrl(url) } : {}),
       ...(webSocketSessionKey ? { webSocketSessionKey } : {}),
+      ...(transport === 'websocket' && webSocketOptions ? { webSocketOptions } : {}),
       headers: {
         Authorization: `Bearer ${config.apiKey ?? ''}`,
         ...config.headers,

@@ -7,6 +7,7 @@ import { WebSocketServer } from 'ws';
 import { resetOpenAIResponsesWebSocketSessions, streamOpenAIResponsesWebSocket } from '../src/llm/websocket-openai-responses.js';
 import type { FormatAdapter } from '../src/llm/formats/types.js';
 import { OpenAIResponsesFormat } from '../src/llm/formats/openai-responses.js';
+import { createOpenAIResponsesProvider } from '../src/llm/providers/openai-responses.js';
 import type { Content } from '../src/types.js';
 
 const passthroughFormat: FormatAdapter = {
@@ -92,6 +93,112 @@ describe('OpenAI Responses WebSocket undici transport', () => {
     expect(requestedExtensions).toBeUndefined();
     expect(negotiatedExtensions).toBe('');
     expect(performance.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  it('does not impose a first-event deadline unless the client explicitly configures one', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('WebSocket test server did not expose a TCP port');
+
+    let resolveRequestReceived!: () => void;
+    const requestReceived = new Promise<void>((resolve) => { resolveRequestReceived = resolve; });
+    server.once('connection', (socket) => {
+      socket.once('message', () => {
+        resolveRequestReceived();
+        // Keep the connection silent. Only the caller-owned AbortSignal may end this request.
+      });
+    });
+
+    const url = `http://127.0.0.1:${address.port}`;
+    const controller = new AbortController();
+    const consume = async (): Promise<void> => {
+      for await (const _chunk of streamOpenAIResponsesWebSocket({
+        endpoint: {
+          url,
+          webSocketUrl: `ws://127.0.0.1:${address.port}`,
+          webSocketSessionKey: `no-default-timeout-${Date.now()}-${Math.random()}`,
+          headers: {},
+        },
+        url,
+        headers: {},
+        body: { input: [] },
+        format: passthroughFormat,
+        signal: controller.signal,
+      })) {
+        // No server event is expected.
+      }
+    };
+
+    let settled = false;
+    const consuming = consume();
+    void consuming.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    try {
+      await requestReceived;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+
+      controller.abort(new Error('client-owned deadline'));
+      await expect(consuming).rejects.toThrow('client-owned deadline');
+    } finally {
+      for (const client of server.clients) client.terminate();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('applies an explicitly configured first-event timeout through provider config', async () => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('WebSocket test server did not expose a TCP port');
+
+    server.once('connection', (socket) => {
+      socket.once('message', () => {
+        // Keep the connection silent until the explicitly configured client deadline.
+      });
+    });
+
+    const url = `http://127.0.0.1:${address.port}/responses`;
+    const provider = createOpenAIResponsesProvider({
+      provider: 'openai-responses',
+      model: 'gpt-4o',
+      apiKey: 'test-key',
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      transport: 'websocket',
+      webSocketSessionKey: `provider-timeout-${Date.now()}-${Math.random()}`,
+      webSocketOptions: {
+        connectTimeoutMs: 500,
+        firstEventTimeoutMs: 40,
+      },
+      endpoint: {
+        url,
+        webSocketUrl: `ws://127.0.0.1:${address.port}/responses`,
+      },
+    });
+    const chunks: Array<{ error?: Record<string, unknown> }> = [];
+
+    try {
+      for await (const chunk of provider.chatStream({
+        contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
+      })) chunks.push(chunk as { error?: Record<string, unknown> });
+
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]?.error).toMatchObject({
+        kind: 'stream_read_error',
+        transport: 'websocket',
+        phase: 'awaiting_first_event',
+        receivedServerEvent: false,
+        retryable: true,
+      });
+      expect(chunks[0]?.error?.message).toContain('received no first event for 40ms');
+    } finally {
+      for (const client of server.clients) client.terminate();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it('fails a WebSocket handshake that does not open before the connection deadline', async () => {

@@ -589,8 +589,55 @@ const provider = createLLMFromConfig({
 - 自定义 `headers`
 - 自定义 `requestBody`
 - 自定义 `fetch`
-- 自定义超时
+- 客户端显式自定义超时
 - 显式指定 `proxy`
+
+---
+
+### 超时与 WebSocket 时间策略
+
+本包默认不为 HTTP 请求、模型列表请求或 OpenAI Responses WebSocket 设置本地超时。未显式配置时，请求会一直等待到服务端完成、连接关闭，或者调用方通过 `AbortSignal` 主动取消。
+
+OpenAI Responses WebSocket 的时间策略必须由客户端显式提供：
+
+```ts
+const provider = createLLMFromConfig({
+  provider: 'openai-responses',
+  model: 'gpt-5.4',
+  apiKey: process.env.OPENAI_API_KEY,
+  transport: 'websocket',
+  webSocketOptions: {
+    connectTimeoutMs: clientConnectTimeoutMs,
+    firstEventTimeoutMs: clientFirstEventTimeoutMs,
+    responseIdleTimeoutMs: clientResponseIdleTimeoutMs,
+    maxConnectionAgeMs: clientMaxConnectionAgeMs,
+    networkIdentityCheckIntervalMs: clientNetworkCheckIntervalMs,
+    reconnectDelaysMs: clientReconnectDelaysMs,
+  },
+}, registry.llmProviders);
+```
+
+这些字段全部可选。未传入的字段不会创建对应 timer/interval，也不会使用包内默认值。`webSocketOptions` 也可以放在 `endpoint` 中。
+
+如果只需要控制整次调用的截止时间，优先由调用方传入信号：
+
+```ts
+const signal = AbortSignal.timeout(clientRequestTimeoutMs);
+
+for await (const chunk of provider.chatStream(request, { signal })) {
+  // consume chunks
+}
+```
+
+模型列表请求同样只接受调用方信号：
+
+```ts
+await listAvailableModels({
+  provider: 'openai-compatible',
+  apiKey: process.env.OPENAI_API_KEY,
+  signal: AbortSignal.timeout(clientModelListTimeoutMs),
+});
+```
 
 ---
 

@@ -308,6 +308,7 @@ export class LLMProvider implements LLMProviderLike {
         body: built.body,
         format: this.format,
         signal: options?.signal,
+        ...(built.endpoint.webSocketOptions ?? {}),
       })) {
         yield encodeStreamChunkToFormat(chunk, {
           format: built.outputFormat,

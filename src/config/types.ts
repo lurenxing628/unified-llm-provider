@@ -1,6 +1,26 @@
 export type FetchLike = typeof fetch;
 export type LLMTransportMode = 'http' | 'websocket';
 
+/**
+ * OpenAI Responses WebSocket 的可选时间策略。
+ *
+ * 所有字段默认均不启用；只有客户端显式传入时，transport 才会创建对应定时器。
+ */
+export interface OpenAIResponsesWebSocketOptions {
+  /** WebSocket 握手最长等待时间。 */
+  connectTimeoutMs?: number;
+  /** response.create 发出后首个服务端事件的最长等待时间。 */
+  firstEventTimeoutMs?: number;
+  /** 已收到事件后，相邻服务端事件之间允许的最长静默时间。 */
+  responseIdleTimeoutMs?: number;
+  /** 连接复用的最长年龄；未配置时不按时间主动轮换连接。 */
+  maxConnectionAgeMs?: number;
+  /** 活动请求期间检查本地网络身份的轮询间隔；未配置时不启用轮询。 */
+  networkIdentityCheckIntervalMs?: number;
+  /** 传输层重连前的等待时间序列；未配置或为空数组时立即重连。 */
+  reconnectDelaysMs?: number[];
+}
+
 export interface LLMRequestDebugEvent {
   url: string;
   stream: boolean;
@@ -42,6 +62,8 @@ export interface LLMEndpointOverride {
   transport?: LLMTransportMode;
   /** WebSocket continuation 会话隔离 key，避免不同对话复用同一 previous_response_id。 */
   webSocketSessionKey?: string;
+  /** OpenAI Responses WebSocket 的显式时间策略；未配置时不启用本地时间限制。 */
+  webSocketOptions?: OpenAIResponsesWebSocketOptions;
   headers?: Record<string, string>;
   /** 显式指定此 endpoint 使用的 HTTP/HTTPS 代理 */
   proxy?: LLMProxyOption;
@@ -113,6 +135,8 @@ export interface LLMConfig {
   transport?: LLMTransportMode;
   /** WebSocket continuation 会话隔离 key，避免不同对话复用同一 previous_response_id。 */
   webSocketSessionKey?: string;
+  /** OpenAI Responses WebSocket 的显式时间策略；未配置时不启用本地时间限制。 */
+  webSocketOptions?: OpenAIResponsesWebSocketOptions;
   /** 自定义 fetch 实现 */
   fetch?: FetchLike;
   /** 显式指定 HTTP/HTTPS 代理，例如 http://127.0.0.1:7890 */

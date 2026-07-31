@@ -16,6 +16,27 @@ describe('model catalog', () => {
     expect(result.models.map(model => model.id)).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro']);
   });
 
+  it('只透传调用方提供的 AbortSignal，不创建默认超时信号', async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBe(controller.signal);
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    await listAvailableModels({
+      provider: 'openai-compatible',
+      apiKey: 'test-key',
+      baseUrl: 'https://api.openai.com/v1',
+      fetch: fetchMock as any,
+      signal: controller.signal,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('openai-compatible 会请求 /v1/models 并带 limit 参数解析列表', async () => {
     const urls: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {

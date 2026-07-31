@@ -5,7 +5,7 @@
  * 支持流式和非流式请求，通过 streamUrl 字段区分 URL。
  */
 
-import type { FetchLike, LLMDebugHooks, LLMProxyOption, LLMTransportMode } from '../config/types.js';
+import type { FetchLike, LLMDebugHooks, LLMProxyOption, LLMTransportMode, OpenAIResponsesWebSocketOptions } from '../config/types.js';
 
 export interface EndpointConfig {
   /** 非流式请求 URL */
@@ -20,6 +20,8 @@ export interface EndpointConfig {
   transport?: LLMTransportMode;
   /** WebSocket continuation 会话隔离 key。 */
   webSocketSessionKey?: string;
+  /** WebSocket 显式时间策略；未配置时 transport 不启用本地时间限制。 */
+  webSocketOptions?: OpenAIResponsesWebSocketOptions;
   /** 请求头（不含 Content-Type，内部自动加） */
   headers: Record<string, string>;
   /** 自定义 fetch 实现 */

@@ -148,6 +148,8 @@ export interface ListAvailableModelsConfig extends Pick<LLMConfig, 'provider' | 
   format?: ModelListOutputFormat;
   /** 分页大小。默认 1000，避免只拿到 provider 默认的 100 条。 */
   pageSize?: number;
+  /** 调用方主动取消或设置截止时间的信号；库本身不创建默认超时。 */
+  signal?: AbortSignal;
 }
 
 const DEEPSEEK_MODELS: ModelCatalogEntry[] = [
@@ -310,14 +312,19 @@ async function parseErrorMessage(res: Response): Promise<string> {
   }
 }
 
-async function requestJSON(url: string, headers: Record<string, string>, fetchImpl?: typeof fetch): Promise<any> {
+async function requestJSON(
+  url: string,
+  headers: Record<string, string>,
+  fetchImpl?: typeof fetch,
+  signal?: AbortSignal,
+): Promise<any> {
   const res = await (fetchImpl ?? fetch)(url, {
     method: 'GET',
     headers: {
       Accept: 'application/json',
       ...headers,
     },
-    signal: AbortSignal.timeout(15_000),
+    signal,
   });
 
   if (!res.ok) {
@@ -409,7 +416,7 @@ async function fetchGeminiModelEntries(config: ListAvailableModelsConfig, baseUr
       pageToken,
     }), {
       ...config.headers,
-    }, config.fetch);
+    }, config.fetch, config.signal);
 
     entries.push(...parseGeminiModels(body));
     pageToken = firstNonEmptyString(body?.nextPageToken);
@@ -431,7 +438,7 @@ async function fetchOpenAIStyleModelEntries(config: ListAvailableModelsConfig, b
     }), {
       Authorization: `Bearer ${apiKey}`,
       ...config.headers,
-    }, config.fetch);
+    }, config.fetch, config.signal);
 
     entries.push(...parseOpenAIStyleModels(body));
 
@@ -460,7 +467,7 @@ async function fetchClaudeModelEntries(config: ListAvailableModelsConfig, baseUr
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
       ...config.headers,
-    }, config.fetch);
+    }, config.fetch, config.signal);
 
     entries.push(...parseClaudeModels(body));
 

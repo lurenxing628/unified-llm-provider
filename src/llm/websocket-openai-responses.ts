@@ -11,18 +11,12 @@
 import { createHash } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { Agent as UndiciAgent, ProxyAgent as UndiciProxyAgent, WebSocket as UndiciWebSocket } from 'undici';
-import type { LLMProxyOption } from '../config/types.js';
+import type { LLMProxyOption, OpenAIResponsesWebSocketOptions } from '../config/types.js';
 import type { LLMRawErrorInfo, LLMRequest, LLMResponse, LLMStreamChunk } from '../types.js';
 import type { FormatAdapter } from './formats/types.js';
 import type { EndpointConfig } from './transport.js';
 
-const OPENAI_RESPONSES_WS_MAX_AGE_MS = 55 * 60 * 1000;
-const OPENAI_RESPONSES_WS_CONNECT_TIMEOUT_MS = 10 * 1000;
-const OPENAI_RESPONSES_WS_FIRST_EVENT_TIMEOUT_MS = 8 * 1000;
-const OPENAI_RESPONSES_WS_RESPONSE_IDLE_TIMEOUT_MS = 30 * 1000;
-const OPENAI_RESPONSES_WS_NETWORK_CHECK_INTERVAL_MS = 1_000;
 const OPENAI_RESPONSES_WS_MAX_REQUEST_ATTEMPTS = 3;
-const OPENAI_RESPONSES_WS_RECONNECT_DELAYS_MS = [250, 750] as const;
 const OPENAI_RESPONSES_WS_RETRYABLE_CLOSE_CODES = new Set([1006, 1011, 1012, 1013, 1014]);
 const OPENAI_RESPONSES_WS_RETRYABLE_PROVIDER_ERROR_CODES = new Set([
   'previous_response_not_found',
@@ -114,23 +108,15 @@ export interface StreamedReasoningSignatureRecord {
   encryptedContent?: string;
 }
 
-export interface OpenAIResponsesWebSocketStreamOptions {
+export interface OpenAIResponsesWebSocketStreamOptions extends OpenAIResponsesWebSocketOptions {
   endpoint: EndpointConfig;
   url: string;
   headers: Record<string, string>;
   body: unknown;
   format: FormatAdapter;
   signal?: AbortSignal;
-  /** Overrides the 10-second connection deadline, primarily for transport tests. */
-  connectTimeoutMs?: number;
-  /** Overrides the 8-second first inbound-event deadline, primarily for transport tests. */
-  firstEventTimeoutMs?: number;
-  /** Overrides the 30-second inbound-event inactivity deadline, primarily for transport tests. */
-  responseIdleTimeoutMs?: number;
-  /** Overrides the local network identity hash, primarily for transport tests. */
+  /** 覆盖本地网络身份哈希，主要用于 transport 测试。 */
   networkIdentityFingerprint?: string | (() => string);
-  /** Overrides active-request network identity polling, primarily for transport tests. */
-  networkIdentityCheckIntervalMs?: number;
 }
 
 interface QueuedMessage {
@@ -184,9 +170,9 @@ export async function* streamOpenAIResponsesWebSocket(
         );
         invalidateSessionState(session);
         allowIncremental = false;
-        // Connection setup already has its own deadline. Repeating that slow wait
-        // here would multiply with the caller's retry policy (3 physical attempts
-        // per outer attempt in LimCode), so connection failures are surfaced once.
+        // Connection setup deadlines are caller-owned. Surface setup failures once
+        // so an explicit client timeout is not multiplied by transport retries and
+        // the caller's outer retry policy.
         throw normalized;
       }
 
@@ -275,7 +261,7 @@ export async function* streamOpenAIResponsesWebSocket(
       }
 
       if (shouldRetryFull) {
-        if (retryAfterTransportFailure) await waitForReconnectDelay(attempt, options.signal);
+        if (retryAfterTransportFailure) await waitForReconnectDelay(attempt, options.reconnectDelaysMs, options.signal);
         continue;
       }
 
@@ -525,7 +511,8 @@ async function ensureOpenSocket(
   options: OpenAIResponsesWebSocketStreamOptions,
   forceNew: boolean,
 ): Promise<UndiciWebSocket> {
-  const expired = isSessionExpired(session);
+  const maxConnectionAgeMs = normalizeOptionalPositiveTimeMs(options.maxConnectionAgeMs, 'maxConnectionAgeMs');
+  const expired = maxConnectionAgeMs !== undefined && isSessionExpired(session, maxConnectionAgeMs);
   const socketOpen = isSocketOpen(session.socket);
   if (forceNew || expired || !socketOpen) {
     closeSessionSocket(session);
@@ -543,11 +530,7 @@ async function openSocket(options: OpenAIResponsesWebSocketStreamOptions): Promi
   const headers = webSocketHeaders(options.headers);
   const baseDispatcher = createWebSocketHandshakeDispatcher(options.endpoint.proxy);
   const dispatcher = webSocketNoCompressionDispatcher(baseDispatcher);
-  const connectTimeoutMs = normalizePositiveTimeoutMs(
-    options.connectTimeoutMs,
-    OPENAI_RESPONSES_WS_CONNECT_TIMEOUT_MS,
-    'connectTimeoutMs',
-  );
+  const connectTimeoutMs = normalizeOptionalPositiveTimeMs(options.connectTimeoutMs, 'connectTimeoutMs');
 
   return new Promise<UndiciWebSocket>((resolve, reject) => {
     if (options.signal?.aborted) {
@@ -608,7 +591,9 @@ async function openSocket(options: OpenAIResponsesWebSocketStreamOptions): Promi
     ws.addEventListener('open', onOpen as never, { once: true });
     ws.addEventListener('error', onError as never, { once: true });
     ws.addEventListener('close', onClose as never, { once: true });
-    connectTimer = setUnrefTimeout(onConnectTimeout, connectTimeoutMs);
+    if (connectTimeoutMs !== undefined) {
+      connectTimer = setUnrefTimeout(onConnectTimeout, connectTimeoutMs);
+    }
   });
 }
 
@@ -620,19 +605,10 @@ async function* sendCreateAndReadEvents(
 ): AsyncGenerator<unknown> {
   const signal = options.signal;
   const queue = createAsyncQueue<unknown>(mergeOpenAIResponsesWebSocketEvents);
-  const firstEventTimeoutMs = normalizePositiveTimeoutMs(
-    options.firstEventTimeoutMs,
-    OPENAI_RESPONSES_WS_FIRST_EVENT_TIMEOUT_MS,
-    'firstEventTimeoutMs',
-  );
-  const responseIdleTimeoutMs = normalizePositiveTimeoutMs(
-    options.responseIdleTimeoutMs,
-    OPENAI_RESPONSES_WS_RESPONSE_IDLE_TIMEOUT_MS,
-    'responseIdleTimeoutMs',
-  );
-  const networkIdentityCheckIntervalMs = normalizePositiveTimeoutMs(
+  const firstEventTimeoutMs = normalizeOptionalPositiveTimeMs(options.firstEventTimeoutMs, 'firstEventTimeoutMs');
+  const responseIdleTimeoutMs = normalizeOptionalPositiveTimeMs(options.responseIdleTimeoutMs, 'responseIdleTimeoutMs');
+  const networkIdentityCheckIntervalMs = normalizeOptionalPositiveTimeMs(
     options.networkIdentityCheckIntervalMs,
-    OPENAI_RESPONSES_WS_NETWORK_CHECK_INTERVAL_MS,
     'networkIdentityCheckIntervalMs',
   );
   const expectedConnectionFingerprint = session.connectionFingerprint;
@@ -673,15 +649,15 @@ async function* sendCreateAndReadEvents(
     closeAndInvalidateSessionSocket(session, socket);
     queue.fail(error);
   };
-  const onResponseTimeout = () => {
+  const onResponseTimeout = (timeoutMs: number) => {
     const error = receivedAnyEvent
       ? timeoutError(
-        `OpenAI Responses WebSocket received no events for ${responseIdleTimeoutMs}ms`,
+        `OpenAI Responses WebSocket received no events for ${timeoutMs}ms`,
         'streaming',
         true,
       )
       : timeoutError(
-        `OpenAI Responses WebSocket received no first event for ${firstEventTimeoutMs}ms`,
+        `OpenAI Responses WebSocket received no first event for ${timeoutMs}ms`,
         'awaiting_first_event',
         false,
       );
@@ -691,7 +667,8 @@ async function* sendCreateAndReadEvents(
   const armResponseTimer = () => {
     clearResponseTimer();
     const timeoutMs = receivedAnyEvent ? responseIdleTimeoutMs : firstEventTimeoutMs;
-    responseTimer = setUnrefTimeout(onResponseTimeout, timeoutMs);
+    if (timeoutMs === undefined) return;
+    responseTimer = setUnrefTimeout(() => onResponseTimeout(timeoutMs), timeoutMs);
   };
   const cleanup = () => {
     clearResponseTimer();
@@ -754,7 +731,9 @@ async function* sendCreateAndReadEvents(
 
   try {
     armResponseTimer();
-    networkCheckTimer = setUnrefInterval(onNetworkIdentityCheck, networkIdentityCheckIntervalMs);
+    if (networkIdentityCheckIntervalMs !== undefined) {
+      networkCheckTimer = setUnrefInterval(onNetworkIdentityCheck, networkIdentityCheckIntervalMs);
+    }
     sendResponseCreateOrThrow(socket, payload);
     for await (const item of queue) yield item;
   } finally {
@@ -823,11 +802,18 @@ function waitWithAbort(promise: Promise<void>, signal?: AbortSignal): Promise<vo
   });
 }
 
-function waitForReconnectDelay(attempt: number, signal?: AbortSignal): Promise<void> {
+function waitForReconnectDelay(
+  attempt: number,
+  reconnectDelaysMs: readonly number[] | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
   if (signal?.aborted) return Promise.reject(errorFromAbortSignal(signal));
-  const delayMs = OPENAI_RESPONSES_WS_RECONNECT_DELAYS_MS[
-    Math.min(attempt, OPENAI_RESPONSES_WS_RECONNECT_DELAYS_MS.length - 1)
-  ]!;
+  const delays = normalizeOptionalNonNegativeTimesMs(reconnectDelaysMs, 'reconnectDelaysMs');
+  const delayMs = delays && delays.length > 0
+    ? delays[Math.min(attempt, delays.length - 1)]
+    : undefined;
+  if (delayMs === undefined || delayMs === 0) return Promise.resolve();
+
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -935,8 +921,8 @@ export function mergeOpenAIResponsesWebSocketEvents(previous: unknown, next: unk
   };
 }
 
-function isSessionExpired(session: WebSocketSession): boolean {
-  return session.connectedAt !== undefined && Date.now() - session.connectedAt >= OPENAI_RESPONSES_WS_MAX_AGE_MS;
+function isSessionExpired(session: WebSocketSession, maxConnectionAgeMs: number): boolean {
+  return session.connectedAt !== undefined && Date.now() - session.connectedAt >= maxConnectionAgeMs;
 }
 
 function closeSessionSocket(session: WebSocketSession): void {
@@ -1357,12 +1343,25 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function normalizePositiveTimeoutMs(value: number | undefined, fallback: number, field: string): number {
-  if (value === undefined) return fallback;
+function normalizeOptionalPositiveTimeMs(value: number | undefined, field: string): number | undefined {
+  if (value === undefined) return undefined;
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`${field} must be a positive finite number`);
   }
   return Math.max(1, Math.floor(value));
+}
+
+function normalizeOptionalNonNegativeTimesMs(
+  values: readonly number[] | undefined,
+  field: string,
+): number[] | undefined {
+  if (values === undefined) return undefined;
+  return values.map((value, index) => {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`${field}[${index}] must be a non-negative finite number`);
+    }
+    return Math.floor(value);
+  });
 }
 
 function setUnrefTimeout(callback: () => void, timeoutMs: number): ReturnType<typeof setTimeout> {
