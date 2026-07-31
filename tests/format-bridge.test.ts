@@ -57,13 +57,14 @@ describe('format bridge', () => {
     expect(raw.contents[0].parts[0].thoughtSignature).toBe('openai-responses:enc_sig_1');
   });
 
-  it('base64 文件可在 Claude 与 unified 之间互转，不按 MIME 做图片判断', () => {
+  it('Claude 普通用户消息按 MIME 将图片转 image、文档转 document', () => {
     const unified = {
       contents: [{
         role: 'user',
         parts: [
           { text: '请读取文件' },
-          { inlineData: { mimeType: 'image/jpeg', data: 'aW1n', name: 'image.jpg' } },
+          { inlineData: { mimeType: 'image/png', data: 'aW1n', name: 'image.png' } },
+          { inlineData: { mimeType: 'application/pdf', data: 'JVBERi0=', name: 'paper.pdf' } },
         ],
       }],
     };
@@ -74,13 +75,24 @@ describe('format bridge', () => {
       model: 'claude-sonnet-4',
     }) as any;
 
+    const imageBlock = claude.messages[0].content.find((block: any) => block.type === 'image');
+    expect(imageBlock).toMatchObject({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: 'aW1n',
+      },
+    });
+    expect(imageBlock.title).toBeUndefined();
+
     const documentBlock = claude.messages[0].content.find((block: any) => block.type === 'document');
     expect(documentBlock).toMatchObject({
       type: 'document',
       source: {
         type: 'base64',
-        media_type: 'image/jpeg',
-        data: 'aW1n',
+        media_type: 'application/pdf',
+        data: 'JVBERi0=',
       },
     });
     expect(documentBlock.title).toBeUndefined();
@@ -92,8 +104,12 @@ describe('format bridge', () => {
     }) as any;
 
     expect(roundTrip.contents[0].parts[1].inlineData).toEqual({
-      mimeType: 'image/jpeg',
+      mimeType: 'image/png',
       data: 'aW1n',
+    });
+    expect(roundTrip.contents[0].parts[2].inlineData).toEqual({
+      mimeType: 'application/pdf',
+      data: 'JVBERi0=',
     });
   });
 
