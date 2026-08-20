@@ -42,6 +42,37 @@ function mergeRequestBody(baseBody: unknown, overrideBody?: Record<string, unkno
   return deepMergeObjects(baseBody, overrideBody);
 }
 
+/**
+ * 各 provider 的顶层 tools 契约均为对象数组。
+ *
+ * requestBody 是原生透传入口，调用方可能把单个工具写成对象；当统一请求本身没有函数工具时，
+ * 通用深合并不会自动建立数组，最终会把对象直接发给上游。这里在 override 合并前和最终 wire
+ * body 边界统一修正，同时过滤数组中的非对象项，避免 provider/网关在迭代时崩溃。
+ */
+function normalizeRequestBodyTools(body: unknown): unknown {
+  if (!isPlainObject(body) || !('tools' in body)) return body;
+
+  const result: Record<string, unknown> = { ...body };
+  const tools = normalizeToolsArray(result.tools);
+  if (tools === undefined) delete result.tools;
+  else result.tools = tools;
+  return result;
+}
+
+function normalizeToolsArray(value: unknown): Record<string, unknown>[] | undefined {
+  if (isPlainObject(value)) return [{ ...value }];
+  if (!Array.isArray(value)) return undefined;
+  return value.filter(isPlainObject).map(tool => ({ ...tool }));
+}
+
+function normalizeRequestBodyOverrides(
+  overrides: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!overrides) return undefined;
+  const normalized = normalizeRequestBodyTools(overrides);
+  return isPlainObject(normalized) ? normalized : overrides;
+}
+
 export interface LLMCallOptions {
   signal?: AbortSignal;
   /** 输入使用的格式，默认 unified */
@@ -123,11 +154,13 @@ export class LLMProvider implements LLMProviderLike {
   }
 
   private get effectiveOverrides(): Record<string, unknown> | undefined {
-    if (!this.runtimeOverrides && !this.staticOverrides) return undefined;
-    if (!this.runtimeOverrides) return this.staticOverrides;
-    if (!this.staticOverrides) return this.runtimeOverrides;
+    const staticOverrides = normalizeRequestBodyOverrides(this.staticOverrides);
+    const runtimeOverrides = normalizeRequestBodyOverrides(this.runtimeOverrides);
+    if (!runtimeOverrides && !staticOverrides) return undefined;
+    if (!runtimeOverrides) return staticOverrides;
+    if (!staticOverrides) return runtimeOverrides;
     // 优先级：统一请求体编码结果 < config.requestBody(static) < 运行时 patchRequestBodyOverrides(runtime)。
-    return deepMergeObjects(this.staticOverrides, this.runtimeOverrides);
+    return deepMergeObjects(staticOverrides, runtimeOverrides);
   }
 
   private resolveInputFormat(options?: LLMCallOptions): FormatId {
@@ -158,7 +191,9 @@ export class LLMProvider implements LLMProviderLike {
       registry: options?.formatRegistry,
     });
 
-    const body = mergeRequestBody(this.format.encodeRequest(canonicalRequest, stream), this.effectiveOverrides);
+    const body = normalizeRequestBodyTools(
+      mergeRequestBody(this.format.encodeRequest(canonicalRequest, stream), this.effectiveOverrides),
+    );
     const endpoint = this.resolveEndpoint(options);
     const { url, headers } = buildRequestTransport(endpoint, stream);
     return {
@@ -188,7 +223,9 @@ export class LLMProvider implements LLMProviderLike {
       throw new Error('stateless compact 不支持 previous_response_id；请通过 input 传入完整上下文窗口');
     }
 
-    const body = mergeRequestBody(this.format.encodeCompactRequest(canonicalRequest), options?.requestBody);
+    const body = normalizeRequestBodyTools(
+      mergeRequestBody(this.format.encodeCompactRequest(canonicalRequest), options?.requestBody),
+    );
     if (isPlainObject(body) && 'previous_response_id' in body) {
       throw new Error('stateless compact 不支持 previous_response_id；请通过 input 传入完整上下文窗口');
     }
