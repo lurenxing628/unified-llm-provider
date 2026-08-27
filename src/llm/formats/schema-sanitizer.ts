@@ -7,6 +7,17 @@
  * 此模块提供按 provider 降级的函数，在保留尽可能多信息的前提下，
  * 确保 schema 能被对应 provider 接受。
  *
+ * 核心原则：递归时必须区分两种对象
+ *
+ *   1. schema 节点（type / properties / required / items / ...）
+ *      —— 只有在这一层才能按 schema 关键字过滤（删 title、default 等）
+ *
+ *   2. properties / patternProperties 的 value（{ 属性名: 子schema } 映射表）
+ *      —— 这里的 key 是属性名，属性名可能恰好叫 title / default / const / $defs，
+ *         绝不能按 schema 关键字删除。
+ *         否则 properties.title 被删掉后 required 仍引用它，
+ *         Gemini 会报 "required[0]: property is not defined" 400。
+ *
  * 已知限制（基于 2026-03 实测 + 社区 issue 调研）：
  *
  *   Gemini:
@@ -27,14 +38,45 @@
  *     - 其余基本完整支持
  */
 
+// ===================== 通用辅助 =====================
+
+/**
+ * 处理 properties / patternProperties 的 value：{ 属性名: 子schema } 映射表。
+ * 属性名原样保留（包括与 schema 关键字同名的 title / default / const 等），
+ * 只对每个属性的 schema 值递归降级。
+ */
+function sanitizePropertyMap(
+  value: unknown,
+  sanitizeChild: (schema: unknown) => unknown,
+): unknown {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const result: Record<string, unknown> = {};
+  for (const [name, childSchema] of Object.entries(value as Record<string, unknown>)) {
+    result[name] = sanitizeChild(childSchema);
+  }
+  return result;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 // ===================== Gemini =====================
+
+/** Gemini 不支持的 schema 关键字（仅在 schema 节点层级删除，不影响属性名） */
+const GEMINI_DROPPED_KEYWORDS = [
+  'title', 'default', 'const', '$defs', 'definitions', '$schema',
+  'not', 'if', 'then', 'else', 'prefixItems',
+];
 
 /**
  * 为 Gemini 降级 schema。最严格的处理：
  *   1. enum 数字值 → 字符串
  *   2. 删除 additionalProperties
  *   3. anyOf/oneOf/allOf → 尝试展平或取第一个分支
- *   4. 删除 title、default、const、$defs、definitions、$schema
+ *   4. 删除 title、default、const、$defs、definitions、$schema（仅 schema 关键字层级）
  *   5. 递归处理所有嵌套
  */
 export function sanitizeSchemaForGemini(schema: unknown): unknown {
@@ -51,10 +93,11 @@ export function sanitizeSchemaForGemini(schema: unknown): unknown {
   let hasStringifiedEnum = false;
 
   for (const [key, value] of Object.entries(obj)) {
-    // 删除 Gemini 不支持的关键字
+    // 删除 Gemini 不支持的 schema 关键字
     // $schema: MCP 工具的 inputSchema 常携带此字段，Gemini API 不识别会直接 400
-    if (['title', 'default', 'const', '$defs', 'definitions', '$schema',
-         'not', 'if', 'then', 'else', 'prefixItems'].includes(key)) {
+    // 注意：这里删的是 schema 节点上的关键字；properties 里的同名属性由
+    // sanitizePropertyMap 处理，不会被误删。
+    if (GEMINI_DROPPED_KEYWORDS.includes(key)) {
       continue;
     }
 
@@ -63,18 +106,23 @@ export function sanitizeSchemaForGemini(schema: unknown): unknown {
       continue;
     }
 
+    // properties / patternProperties：key 是属性名，value 是 { 属性名: 子schema } 映射
+    if (key === 'properties' || key === 'patternProperties') {
+      result[key] = sanitizePropertyMap(value, sanitizeSchemaForGemini);
+      continue;
+    }
+
     // anyOf/oneOf/allOf: 尝试展平或取第一个
     if ((key === 'anyOf' || key === 'oneOf' || key === 'allOf') && Array.isArray(value)) {
       // 如果是属性层级的 anyOf（与 type/properties 等混用），跳过 anyOf
       // 如果是唯一字段，取第一个分支展开
       const otherKeys = Object.keys(obj).filter(k =>
-        k !== key && !['title', 'default', 'const', '$defs', 'definitions',
-          'not', 'if', 'then', 'else', 'prefixItems', 'additionalProperties'].includes(k)
+        k !== key && !GEMINI_DROPPED_KEYWORDS.includes(k) && k !== 'additionalProperties'
       );
       if (otherKeys.length === 0 && value.length > 0) {
         // anyOf 是唯一有意义的字段 → 取第一个分支展开
         const first = sanitizeSchemaForGemini(value[0]);
-        if (first && typeof first === 'object') {
+        if (isPlainObject(first)) {
           Object.assign(result, first);
         }
         continue;
@@ -90,7 +138,7 @@ export function sanitizeSchemaForGemini(schema: unknown): unknown {
       continue;
     }
 
-    // 递归处理嵌套对象
+    // 递归处理嵌套 schema 节点
     result[key] = sanitizeSchemaForGemini(value);
   }
 
@@ -104,6 +152,9 @@ export function sanitizeSchemaForGemini(schema: unknown): unknown {
 }
 
 // ===================== OpenAI =====================
+
+/** OpenAI 需要删除的 schema 关键字（仅 schema 节点层级） */
+const OPENAI_DROPPED_KEYWORDS = ['$defs', 'definitions', '$schema'];
 
 /**
  * 为 OpenAI (non-strict) 降级 schema。轻量处理：
@@ -124,9 +175,15 @@ export function sanitizeSchemaForOpenAI(schema: unknown): unknown {
   const result: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(obj)) {
-    // 删除已展开的残留
+    // 删除已展开的残留（schema 关键字层级；properties 里的同名属性不受影响）
     // $schema: MCP 工具常携带，对 LLM API 无意义
-    if (key === '$defs' || key === 'definitions' || key === '$schema') continue;
+    if (OPENAI_DROPPED_KEYWORDS.includes(key)) continue;
+
+    // properties / patternProperties：key 是属性名，原样保留
+    if (key === 'properties' || key === 'patternProperties') {
+      result[key] = sanitizePropertyMap(value, sanitizeSchemaForOpenAI);
+      continue;
+    }
 
     // enum: 统一转字符串
     if (key === 'enum' && Array.isArray(value)) {
@@ -141,6 +198,9 @@ export function sanitizeSchemaForOpenAI(schema: unknown): unknown {
 }
 
 // ===================== Claude =====================
+
+/** Claude 需要删除的 schema 关键字（仅 schema 节点层级） */
+const CLAUDE_DROPPED_KEYWORDS = ['$defs', 'definitions', '$schema'];
 
 /**
  * 为 Claude 降级 schema。中等处理：
@@ -161,14 +221,20 @@ export function sanitizeSchemaForClaude(schema: unknown, isTopLevel = true): unk
   const result: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(obj)) {
-    // 删除已展开的残留
+    // 删除已展开的残留（schema 关键字层级；properties 里的同名属性不受影响）
     // $schema: MCP 工具常携带，对 LLM API 无意义
-    if (key === '$defs' || key === 'definitions' || key === '$schema') continue;
+    if (CLAUDE_DROPPED_KEYWORDS.includes(key)) continue;
+
+    // properties / patternProperties：key 是属性名，原样保留
+    if (key === 'properties' || key === 'patternProperties') {
+      result[key] = sanitizePropertyMap(value, v => sanitizeSchemaForClaude(v, false));
+      continue;
+    }
 
     // 顶层的 anyOf/oneOf/allOf → 取第一个分支
     if (isTopLevel && (key === 'anyOf' || key === 'oneOf' || key === 'allOf') && Array.isArray(value) && value.length > 0) {
       const first = sanitizeSchemaForClaude(value[0], false);
-      if (first && typeof first === 'object') {
+      if (isPlainObject(first)) {
         Object.assign(result, first);
       }
       continue;
