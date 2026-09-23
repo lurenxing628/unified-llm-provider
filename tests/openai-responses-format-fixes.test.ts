@@ -1181,8 +1181,11 @@ describe('OpenAIResponsesFormat 原行为不变（修复前基线逐字节比较
   });
 
   it('explicit 模式下末尾本来就是 user input_text 时，请求体与修复前逐字节一致', () => {
-    const body = new OpenAIResponsesFormat('gpt-5.6', { enabled: true, mode: 'explicit' }).encodeRequest(HISTORY_REQUEST, true);
-    expect(JSON.stringify(body)).toBe(JSON.stringify(BASELINE_EXPLICIT_BODY));
+    // BASELINE_EXPLICIT_BODY 录制时用的是 gpt-5.6；limcode.4 起 GPT-5.6 及之后的官方 id 在 explicit 下把
+    // instructions 转为带断点的 developer 消息（见下方“GPT-5.6 及之后的显式缓存”），所以这里用清单以外的
+    // 模型验证原编码逐字节不变（只替换 model 字段）。
+    const body = new OpenAIResponsesFormat('gpt-5.5', { enabled: true, mode: 'explicit' }).encodeRequest(HISTORY_REQUEST, true);
+    expect(JSON.stringify(body)).toBe(JSON.stringify({ ...BASELINE_EXPLICIT_BODY, model: 'gpt-5.5' }));
     const astra = new OpenAIResponsesFormat('gpt-6-astra', { enabled: true, mode: 'explicit' }).encodeRequest(HISTORY_REQUEST, true);
     expect(JSON.stringify(astra)).toBe(JSON.stringify(BASELINE_ASTRA_EXPLICIT_BODY));
   });
@@ -1569,5 +1572,42 @@ describe('B8 普通响应里的服务端 compaction 输出项解码为 providerC
     }) as any;
     expect(body.input.filter((item: any) => item.type === 'compaction')).toEqual([COMPACTION]);
     expect(body.input[1]).toEqual(COMPACTION);
+  });
+});
+
+describe('GPT-5.6 及之后的显式缓存：instructions 转为带断点的 developer 消息', () => {
+  // 依据：https://developers.openai.com/api/docs/guides/prompt-caching
+  // “Top-level `instructions` cannot contain an explicit breakpoint. To mark reusable developer instructions,
+  //  place them in an `input_text` block inside a developer message.”；Summary of model differences：
+  //  Explicit breakpoints 只在 “GPT-5.6 and later” 上支持。只认官方精确 id 及其日期快照。
+  const OFFICIAL = [
+    'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+    'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna',
+    'gpt-6-sol-2026-05-01', 'GPT-6-Luna', ' gpt-5.6-2026-04-01 ',
+  ];
+  const NOT_OFFICIAL = [
+    'gpt-5.5', 'gpt-5.4', 'gpt-5.6-sol-xhigh', '[az]gpt-5.6-sol', 'gpt-6-sol-xhigh', 'gpt-6-astra-pro',
+    'gpt-6', 'gpt-6-luna-mini', 'gpt-6-sol-20260501',
+  ];
+
+  it('官方 id 与日期快照：与 Astra 基线相同（只替换 model 字段）', () => {
+    for (const model of OFFICIAL) {
+      const body = new OpenAIResponsesFormat(model, { enabled: true, mode: 'explicit' }).encodeRequest(HISTORY_REQUEST, true);
+      expect(JSON.stringify(body), model).toBe(JSON.stringify({ ...BASELINE_ASTRA_EXPLICIT_BODY, model }));
+    }
+  });
+
+  it('网关别名与更早的模型：instructions 保持顶层，与修复前基线逐字节一致', () => {
+    for (const model of NOT_OFFICIAL) {
+      const body = new OpenAIResponsesFormat(model, { enabled: true, mode: 'explicit' }).encodeRequest(HISTORY_REQUEST, true);
+      expect(JSON.stringify(body), model).toBe(JSON.stringify({ ...BASELINE_EXPLICIT_BODY, model }));
+    }
+  });
+
+  it('implicit / key 模式不转换 instructions（与修复前一致）', () => {
+    const implicit = new OpenAIResponsesFormat('gpt-6-sol', { enabled: true, mode: 'implicit', key: 'k1' }).encodeRequest(HISTORY_REQUEST, true);
+    expect(JSON.stringify(implicit)).toBe(JSON.stringify({ ...BASELINE_IMPLICIT_BODY, model: 'gpt-6-sol' }));
+    const key = new OpenAIResponsesFormat('gpt-6-luna', { enabled: true, mode: 'key', key: 'k1' }).encodeRequest(HISTORY_REQUEST, true);
+    expect(JSON.stringify(key)).toBe(JSON.stringify({ ...BASELINE_KEY_MODE_BODY, model: 'gpt-6-luna' }));
   });
 });

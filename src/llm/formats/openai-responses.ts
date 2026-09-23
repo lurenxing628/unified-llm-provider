@@ -34,6 +34,24 @@ function isLimcodeAstraModel(model: string): boolean {
   return normalized === 'gpt-6-astra' || /^gpt-6-astra-\d{4}-\d{2}-\d{2}$/.test(normalized);
 }
 
+/**
+ * 显式提示缓存（`prompt_cache_options` / `prompt_cache_breakpoint`）只支持 “GPT-5.6 and later”。
+ * 依据：https://developers.openai.com/api/docs/guides/prompt-caching#summary-of-model-differences。
+ * 只认官方精确 id 及其日期快照，与 LimCode 扩展的显式缓存模型清单一致。
+ */
+const LIMCODE_EXPLICIT_PROMPT_CACHE_MODELS: ReadonlySet<string> = new Set([
+  'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+  'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna',
+]);
+
+function officialModelBaseId(model: string): string {
+  return model.trim().toLowerCase().replace(/-\d{4}-\d{2}-\d{2}$/, '');
+}
+
+function supportsLimcodeExplicitPromptCache(model: string): boolean {
+  return LIMCODE_EXPLICIT_PROMPT_CACHE_MODELS.has(officialModelBaseId(model));
+}
+
 /** LimCode Astra：把 SSE 事件的 output_index/item_id 归一为 chunk 级 output item 引用。 */
 function attachLimcodeOutputItem(chunk: LLMStreamChunk, data: any): void {
   const ordinal = typeof data?.output_index === 'number' && Number.isSafeInteger(data.output_index) && data.output_index >= 0
@@ -276,9 +294,12 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       mode: this.promptCache.mode === 'implicit' ? 'implicit' : 'explicit',
       ttl: this.promptCache.ttl,
     };
-    // Astra 显式缓存（GPT-5.6+ 语义）：顶层 instructions 不能携带断点；稳定开发者指令
-    // 转为 input_text 块放入 developer 消息并标记断点。其他模型保持原行为。
-    if (this.promptCache.mode === 'explicit' && isLimcodeAstraModel(this.model)
+    // GPT-5.6 及之后的显式缓存：顶层 instructions 不能携带断点；稳定开发者指令转为 input_text 块
+    // 放入 developer 消息并标记断点。其他模型保持原行为。依据：
+    // https://developers.openai.com/api/docs/guides/prompt-caching（“Top-level `instructions` cannot contain an
+    // explicit breakpoint. To mark reusable developer instructions, place them in an `input_text` block inside
+    // a developer message.”；显式断点只支持 “GPT-5.6 and later”）。
+    if (this.promptCache.mode === 'explicit' && supportsLimcodeExplicitPromptCache(this.model)
       && typeof body.instructions === 'string' && body.instructions) {
       inputItems.unshift({
         role: 'developer',
