@@ -1356,6 +1356,119 @@ describe('B5 explicit 缓存断点放到最后一个可承载块，不再追加�
   });
 });
 
+describe('explicit 续接链：breakpoints.toolOutputs 让工具结果以数组形式承载断点', () => {
+  // 依据：https://developers.openai.com/api/docs/guides/prompt-caching（Multi-turn agent 示例：
+  // “A breakpoint is added after each tool result”，断点放在 function_call_output 数组形式的 input_text 上）；
+  // Responses create 参考：function_call_output 的 output 为 “string or array of ResponseInputTextContent ...”，
+  // 只有数组里的 input_text / input_image / input_file 接受 prompt_cache_breakpoint。
+  const BREAKPOINT = { mode: 'explicit' };
+  const withToolOutputs = (model = 'gpt-5.6', extra: Record<string, unknown> = {}) => new OpenAIResponsesFormat(model, {
+    enabled: true, mode: 'explicit', breakpoints: { messages: true, toolOutputs: true }, ...extra,
+  });
+  const LOOP_TWO_CALLS: LLMRequest = {
+    contents: [
+      ...TOOL_LOOP_REQUEST.contents,
+      { role: 'model', parts: [
+        { functionCall: { name: 'read_file', args: { path: 'b.txt' }, callId: 'call_2' } },
+        { functionCall: { name: 'read_file', args: { path: 'c.txt' }, callId: 'call_3' } },
+      ] },
+      { role: 'user', parts: [
+        { functionResponse: { name: 'read_file', response: { content: 'bee' }, callId: 'call_2' } },
+        { functionResponse: { name: 'read_file', response: { content: 'sea' }, callId: 'call_3' } },
+      ] },
+    ],
+  };
+  const withoutBreakpoints = (value: unknown) => JSON.parse(JSON.stringify(value, (key, child) =>
+    key === 'prompt_cache_breakpoint' ? undefined : child));
+
+  it('工具循环：所有工具结果转成 input_text 数组，断点只落在最新的工具结果上', () => {
+    const body = withToolOutputs().encodeRequest(TOOL_LOOP_REQUEST, true) as any;
+    expect(body.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'read a.txt' }] },
+      { type: 'function_call', call_id: 'call_1', name: 'read_file', arguments: '{"path":"a.txt"}' },
+      { type: 'function_call_output', call_id: 'call_1', output: [
+        { type: 'input_text', text: '{"content":"hello"}', prompt_cache_breakpoint: BREAKPOINT },
+      ] },
+    ]);
+    expect(body.prompt_cache_options).toEqual({ mode: 'explicit', ttl: '30m' });
+  });
+
+  it('同一组并行工具结果：全部是数组形式，只在最后一个打断点', () => {
+    const body = withToolOutputs().encodeRequest(LOOP_TWO_CALLS, true) as any;
+    const outputs = body.input.filter((item: any) => item.type === 'function_call_output');
+    expect(outputs.map((item: any) => item.output)).toEqual([
+      [{ type: 'input_text', text: '{"content":"hello"}' }],
+      [{ type: 'input_text', text: '{"content":"bee"}' }],
+      [{ type: 'input_text', text: '{"content":"sea"}', prompt_cache_breakpoint: BREAKPOINT }],
+    ]);
+    expect(JSON.stringify(body.input).split('prompt_cache_breakpoint').length - 1).toBe(1);
+  });
+
+  it('后一请求只在断点标记上与前一请求不同：去掉断点后前一请求的 input 是后一请求的前缀', () => {
+    const format = withToolOutputs('gpt-6-astra');
+    const request = { systemInstruction: { parts: [{ text: 'stable' }] } };
+    const first = format.encodeRequest({ ...request, ...TOOL_LOOP_REQUEST }, true) as any;
+    const second = format.encodeRequest({ ...request, ...LOOP_TWO_CALLS }, true) as any;
+    expect(first.input[0]).toEqual({ role: 'developer', content: [{ type: 'input_text', text: 'stable', prompt_cache_breakpoint: BREAKPOINT }] });
+    expect(withoutBreakpoints(second.input.slice(0, first.input.length))).toEqual(withoutBreakpoints(first.input));
+    expect(first.input.at(-1).output[0].prompt_cache_breakpoint).toEqual(BREAKPOINT);
+    expect(second.input[first.input.length - 1].output[0].prompt_cache_breakpoint).toBeUndefined();
+  });
+
+  it('已是数组形式（带附件）的工具结果保持原样，断点落在最后一个内容块', () => {
+    const body = withToolOutputs().encodeRequest({
+      contents: [
+        { role: 'user', parts: [{ text: 'shot' }] },
+        { role: 'model', parts: [{ functionCall: { name: 'screenshot', args: {}, callId: 'call_s' } }] },
+        { role: 'user', parts: [{ functionResponse: {
+          name: 'screenshot', response: { ok: true }, callId: 'call_s',
+          parts: [{ inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } }],
+        } }] },
+      ],
+    }, true) as any;
+    const output = body.input.at(-1).output;
+    expect(output[0]).toEqual({ type: 'input_text', text: '{"ok":true}' });
+    expect(output.at(-1)).toMatchObject({ type: 'input_image', prompt_cache_breakpoint: BREAKPOINT });
+  });
+
+  it('providerContext 回放的字符串工具结果换成新对象转换，不改动原始 item', () => {
+    const rawOutput = { type: 'function_call_output', call_id: 'call_raw', output: 'raw result' };
+    const body = withToolOutputs().encodeRequest({
+      contents: [
+        { role: 'user', parts: [{ text: 'go' }] },
+        { role: 'user', parts: [{ providerContext: { provider: 'openai', format: 'openai-responses', endpoint: 'responses', itemType: 'function_call_output', rawItem: rawOutput } }] },
+      ],
+    }, true) as any;
+    expect(body.input.at(-1)).toEqual({ type: 'function_call_output', call_id: 'call_raw', output: [
+      { type: 'input_text', text: 'raw result', prompt_cache_breakpoint: BREAKPOINT },
+    ] });
+    expect(rawOutput.output).toBe('raw result');
+  });
+
+  it('只在 explicit 且模型支持显式缓存、消息断点开启时生效；其他组合与不开启时逐字节一致', () => {
+    const same = (withFlag: OpenAIResponsesFormat, without: OpenAIResponsesFormat, request: LLMRequest) =>
+      expect(JSON.stringify(withFlag.encodeRequest(request, true))).toBe(JSON.stringify(without.encodeRequest(request, true)));
+    for (const request of [TOOL_LOOP_REQUEST, LOOP_TWO_CALLS, HISTORY_REQUEST]) {
+      same(new OpenAIResponsesFormat('gpt-5.6', { enabled: true, mode: 'key', key: 'k1', breakpoints: { toolOutputs: true } }),
+        new OpenAIResponsesFormat('gpt-5.6', { enabled: true, mode: 'key', key: 'k1' }), request);
+      same(new OpenAIResponsesFormat('gpt-5.6', { enabled: true, mode: 'implicit', breakpoints: { toolOutputs: true } }),
+        new OpenAIResponsesFormat('gpt-5.6', { enabled: true, mode: 'implicit' }), request);
+      same(new OpenAIResponsesFormat('gpt-5.6', { enabled: false, mode: 'explicit', breakpoints: { toolOutputs: true } }),
+        new OpenAIResponsesFormat('gpt-5.6'), request);
+      same(new OpenAIResponsesFormat('gpt-5.5', { enabled: true, mode: 'explicit', breakpoints: { toolOutputs: true } }),
+        new OpenAIResponsesFormat('gpt-5.5', { enabled: true, mode: 'explicit' }), request);
+      same(new OpenAIResponsesFormat('gpt-5.6', { enabled: true, mode: 'explicit', breakpoints: { messages: false, toolOutputs: true } }),
+        new OpenAIResponsesFormat('gpt-5.6', { enabled: true, mode: 'explicit', breakpoints: { messages: false } }), request);
+    }
+  });
+
+  it('compact 请求不注入缓存，工具结果仍是字符串形式', () => {
+    const body = withToolOutputs().encodeCompactRequest(TOOL_LOOP_REQUEST) as any;
+    expect(body.input.at(-1)).toEqual({ type: 'function_call_output', call_id: 'call_1', output: '{"content":"hello"}' });
+    expect(JSON.stringify(body)).not.toContain('prompt_cache');
+  });
+});
+
 describe('B6 非 Astra 模型的 assistant message phase 保留在 outputItem 上', () => {
   // 依据：https://developers.openai.com/api/docs/guides/reasoning#phase-parameter
   // “If you replay assistant history manually, preserve each original phase value.

@@ -89,6 +89,13 @@ export interface LLMPromptCacheBreakpoints {
   tools?: boolean;
   /** 在本次请求聊天记录末尾写入缓存断点。 */
   messages?: boolean;
+  /**
+   * [OpenAI Responses] 仅 explicit 模式（GPT-5.6 及之后的官方 id）：把字符串形式的 function_call_output
+   * 编码成 input_text 内容块数组，让最新的工具结果也能承载消息断点（字符串形式不能承载）。默认关闭。
+   * 适合续接链（WebSocket previous_response_id）：服务端保留此前各帧的断点，每帧把断点放在最新的工具结果上，
+   * 工具循环就能逐轮复用缓存。无状态的完整重放请求只有一个随请求移动的消息断点，不应开启。
+   */
+  toolOutputs?: boolean;
 }
 
 export interface LLMPromptCacheConfig {

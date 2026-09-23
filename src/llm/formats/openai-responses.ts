@@ -25,6 +25,7 @@ interface NormalizedOpenAIResponsesPromptCacheConfig {
   ttl: '30m';
   breakpoints: {
     messages: boolean;
+    toolOutputs: boolean;
   };
 }
 
@@ -322,6 +323,11 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       // 依据：https://developers.openai.com/api/docs/guides/prompt-caching（Explicit mode：
       // “mark each desired breakpoint by adding prompt_cache_breakpoint ... to a supported content block
       // inside an input message”；多轮 agent 示例把断点放在 function_call_output 的 input_text 上）。
+      // 调用方开启 breakpoints.toolOutputs 时（续接链），字符串形式的工具结果先转成 input_text 数组，
+      // 让最新的工具结果成为断点承载块；整条 input 统一转换，前后请求的已发送前缀保持一致。
+      if (this.promptCache.breakpoints.toolOutputs && supportsLimcodeExplicitPromptCache(this.model)) {
+        encodeOpenAIResponsesToolOutputsAsContentBlocks(inputItems);
+      }
       if (!markLastOpenAIResponsesBreakpointCarrier(inputItems)) {
         inputItems.push(createOpenAICacheMarkerMessage(' '));
       }
@@ -745,6 +751,7 @@ function normalizeOpenAIResponsesPromptCacheConfig(promptCache: LLMPromptCacheCo
     ttl: '30m',
     breakpoints: {
       messages: breakpoints.messages !== false,
+      toolOutputs: breakpoints.toolOutputs === true,
     },
   };
 }
@@ -795,6 +802,20 @@ function markLastOpenAIResponsesBreakpointCarrier(inputItems: any[]): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * 把字符串形式的 function_call_output 换成 `[{ type: 'input_text', text }]`（OpenAPI：output 可为
+ * “array of ResponseInputTextContent ...”，其 input_text 接受 prompt_cache_breakpoint）。空字符串保持原样。
+ * 替换为新对象，不改动 providerContext 里的原始 item。
+ */
+function encodeOpenAIResponsesToolOutputsAsContentBlocks(inputItems: any[]): void {
+  for (let index = 0; index < inputItems.length; index++) {
+    const item = inputItems[index];
+    if (!isPlainObject(item) || item.type !== 'function_call_output') continue;
+    if (typeof item.output !== 'string' || !item.output) continue;
+    inputItems[index] = { ...item, output: [{ type: 'input_text', text: item.output }] };
+  }
 }
 
 function getOpenAIResponsesBreakpointCarrierBlocks(item: unknown): unknown[] | undefined {
