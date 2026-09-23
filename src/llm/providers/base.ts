@@ -5,7 +5,7 @@
 import type { LLMRequest, LLMResponse, LLMStreamChunk } from '../../types/index.js';
 import type { FormatId, UnifiedSignatureMode } from '../convert.js';
 import { decodeRequestFromFormat, encodeCompactResponseToFormat, encodeResponseToFormat, encodeStreamChunkToFormat, normalizeFormatId } from '../convert.js';
-import { isCompactFormatAdapter, type FormatAdapter } from '../formats/types.js';
+import { assertFormatAcceptsClaudeSystemMessages, isCompactFormatAdapter, type FormatAdapter } from '../formats/types.js';
 import { detectLLMRequestSignatureRepresentation } from '../../signatures/normalize.js';
 import { buildRequestTransport, sendRequest, type EndpointConfig } from '../transport.js';
 import type { LLMProxyOption } from '../../config/types.js';
@@ -191,6 +191,7 @@ export class LLMProvider implements LLMProviderLike {
       format: inputFormat,
       registry: options?.formatRegistry,
     });
+    assertFormatAcceptsClaudeSystemMessages(canonicalRequest, this.format, this.providerName);
 
     const body = normalizeRequestBodyTools(
       mergeRequestBody(this.format.encodeRequest(canonicalRequest, stream), this.effectiveOverrides),
@@ -219,6 +220,8 @@ export class LLMProvider implements LLMProviderLike {
       format: inputFormat,
       registry: options?.formatRegistry,
     });
+
+    assertFormatAcceptsClaudeSystemMessages(canonicalRequest, this.format, this.providerName);
 
     if (options?.requestBody && 'previous_response_id' in options.requestBody) {
       throw new Error('stateless compact 不支持 previous_response_id；请通过 input 传入完整上下文窗口');

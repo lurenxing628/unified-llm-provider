@@ -88,6 +88,8 @@ function fnv1a32Hex(value: string): string {
 }
 
 export class ClaudeFormat implements FormatAdapter {
+  /** 能编码 `Content.claudeSystemMessage`（消息中段 system 消息）。 */
+  readonly acceptsClaudeSystemMessages = true;
   private readonly promptCache: NormalizedClaudePromptCacheConfig;
 
   constructor(
@@ -116,6 +118,10 @@ export class ClaudeFormat implements FormatAdapter {
     let generatedToolUseIdCounter = 0;
 
     for (const content of request.contents) {
+      if (content.claudeSystemMessage !== undefined) {
+        messages.push(encodeClaudeSystemMessage(content));
+        continue;
+      }
       const textParts = content.parts.filter(isVisibleTextPart);
       const funcRespParts = content.parts.filter(isFunctionResponsePart);
 
@@ -212,7 +218,7 @@ export class ClaudeFormat implements FormatAdapter {
       }
     }
 
-    body.messages = messages;
+    body.messages = settleClaudeSystemMessagePlacement(messages);
 
     // tools 声明转换
     if (request.tools && request.tools.length > 0) {
@@ -466,6 +472,9 @@ export class ClaudeFormat implements FormatAdapter {
 
     // 3. 标记最后一条用户消息的最后一个内容块。
     //    这会缓存整个对话历史前缀。
+    //    消息中段 system 消息（role: "system"）不是 user 消息，自然被跳过：官方要求轮内系统消息的块上
+    //    不能带 cache_control，断点放在它前面那条 user 消息的最后一块上
+    //    （https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages）。
     const messages = body.messages as any[] | undefined;
     if (config.breakpoints.messages && messages && messages.length > 0) {
       for (let i = messages.length - 1; i >= 0; i--) {
@@ -485,6 +494,80 @@ export class ClaudeFormat implements FormatAdapter {
       }
     }
   }
+}
+
+/**
+ * `Content.claudeSystemMessage` → Messages API 消息中段 system 消息
+ * （https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages）。
+ *
+ * - 内容只取可见文本 part：官方规定轮内系统消息的 content 只能是文本块或字符串；
+ *   只有一个文本 part 时写成字符串，多个时写成文本块数组，保证同一内容每次编码逐字节相同。
+ * - `clearAt: 'next_user_message'` 写 `clear_at`；缺省 / `never` 不写（官方：省略与 never 相同）。
+ * - 不在这里加 cache_control：轮内系统消息不允许带，断点由 injectCacheBreakpoints 放在前一条 user 消息上。
+ */
+function encodeClaudeSystemMessage(content: LLMRequest['contents'][number]): Record<string, unknown> {
+  if (content.role !== 'user') {
+    throw new Error('Claude 消息中段 system 消息只能用 role: "user" 的内容表示。');
+  }
+  const texts: string[] = [];
+  for (const part of content.parts) {
+    if (!isVisibleTextPart(part)) {
+      throw new Error('Claude 消息中段 system 消息只能包含文本。');
+    }
+    if (part.text) texts.push(part.text);
+  }
+  if (texts.length === 0) throw new Error('Claude 消息中段 system 消息不能为空。');
+  const clearAt = content.claudeSystemMessage?.clearAt;
+  return {
+    role: 'system',
+    ...(clearAt === 'next_user_message' ? { clear_at: 'next_user_message' } : {}),
+    content: texts.length === 1 ? texts[0] : texts.map(text => ({ type: 'text', text })),
+  };
+}
+
+/**
+ * 按官方位置规则检查消息中段 system 消息（连续多条视为一段，整段一起判断）：
+ * - 必须紧跟一条 user 消息（含只带 tool_result 的 user 消息），或以服务端工具结果结尾的 assistant 消息；
+ *   不能是第一条，也不能夹在 tool_use 与 tool_result 之间。违反时直接报错：调用方放错了位置。
+ * - 后面只能是 assistant 消息或数组结尾。后面紧跟 user 消息时官方返回 400。轮内系统消息
+ *   （clear_at: next_user_message）在这个位置本来就永远不会显示（其后已有 user 消息），整段去掉，
+ *   结果只取决于这段历史本身，每次编码都一样；普通 system 消息则报错。
+ *   这种情况出现在它原本面对的 assistant 消息没有可编码的内容而被省略时。
+ */
+function settleClaudeSystemMessagePlacement(messages: Record<string, unknown>[]): Record<string, unknown>[] {
+  if (!messages.some(message => message.role === 'system')) return messages;
+  const settled: Record<string, unknown>[] = [];
+  for (let index = 0; index < messages.length;) {
+    if (messages[index].role !== 'system') {
+      settled.push(messages[index]);
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end < messages.length && messages[end].role === 'system') end += 1;
+    const section = messages.slice(index, end);
+    const previous = settled[settled.length - 1];
+    if (!previous || !opensClaudeSystemSection(previous)) {
+      throw new Error(`messages[${index}]：消息中段 system 消息必须紧跟一条 user 消息（含只带 tool_result 的 user 消息）。`);
+    }
+    const next = messages[end];
+    if (next && next.role !== 'assistant') {
+      if (!section.every(message => message.clear_at === 'next_user_message')) {
+        throw new Error(`messages[${index}]：消息中段 system 消息后面只能是 assistant 消息或数组结尾。`);
+      }
+    } else {
+      settled.push(...section);
+    }
+    index = end;
+  }
+  return settled;
+}
+
+function opensClaudeSystemSection(previous: Record<string, unknown>): boolean {
+  if (previous.role === 'user') return true;
+  if (previous.role !== 'assistant' || !Array.isArray(previous.content)) return false;
+  const last = previous.content[previous.content.length - 1] as { type?: unknown } | undefined;
+  return typeof last?.type === 'string' && last.type.endsWith('_tool_result');
 }
 
 function normalizeClaudePromptCacheConfig(

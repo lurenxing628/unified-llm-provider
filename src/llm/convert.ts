@@ -5,7 +5,7 @@ import { normalizeLLMRequestThoughtSignatures, normalizeLLMResponseThoughtSignat
 import { serializeLLMRequestThoughtSignatures, serializeLLMResponseThoughtSignatures, serializeLLMStreamChunkThoughtSignatures } from '../signatures/serialize.js';
 import { createBuiltinFormatRegistry, type FormatFactoryOptions, type FormatRegistry } from '../registry/formats.js';
 import { normalizeThinkingLevel, normalizeReasoningMode } from './formats/thinking-level.js';
-import { isCompactFormatAdapter } from './formats/types.js';
+import { assertFormatAcceptsClaudeSystemMessages, isCompactFormatAdapter } from './formats/types.js';
 import { isSupportedToolResponseMimeType, isToolResponseDocumentMimeType, parseBase64DataUrl } from './vision.js';
 
 export type UnifiedFormatId = 'unified';
@@ -347,6 +347,15 @@ const parseClaudeToolResultContent = (content: unknown): { response: Record<stri
   };
 
 
+function parseClaudeSystemMessageText(content: unknown): Part[] {
+  if (typeof content === 'string') return content ? [{ text: content }] : [];
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((block): block is { type: 'text'; text: string } => !!block && typeof block === 'object'
+      && (block as any).type === 'text' && typeof (block as any).text === 'string')
+    .map(block => ({ text: block.text }));
+}
+
 function decodeClaudeRequest(raw: unknown): LLMRequest {
   const data = raw as any;
   const contents: Content[] = [];
@@ -432,6 +441,17 @@ function decodeClaudeRequest(raw: unknown): LLMRequest {
     } else if (message.role === 'user') {
       const parts = parseUserBlocks(message.content);
       if (parts.length > 0) contents.push({ role: 'user', parts });
+    } else if (message.role === 'system') {
+      // 消息中段 system 消息（mid-conversation system messages）：文本内容保留为 Claude 专用内容，
+      // clear_at 原样往返；tool_addition / tool_removal 等非文本块不在统一格式里表示。
+      const parts = parseClaudeSystemMessageText(message.content);
+      if (parts.length > 0) {
+        contents.push({
+          role: 'user',
+          parts,
+          claudeSystemMessage: message.clear_at === 'next_user_message' ? { clearAt: 'next_user_message' } : {},
+        });
+      }
     }
   }
 
@@ -863,6 +883,7 @@ export function encodeRequestToFormat(request: LLMRequest, options: EncodeReques
 
   const registry = resolveFormatRegistry(options.registry);
   const adapter = createAdapter(format, registry, options);
+  assertFormatAcceptsClaudeSystemMessages(normalizedRequest, adapter, format);
   return adapter.encodeRequest(normalizedRequest, options.stream);
 }
 

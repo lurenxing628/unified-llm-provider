@@ -33,6 +33,28 @@ export interface FormatAdapter {
    * 此时流的输出与未实现该钩子时完全一致。读取中断（stream_read_error）时不会调用。
    */
   finalizeStream?(state: StreamDecodeState): LLMStreamChunk | undefined;
+
+  /**
+   * 可选：本格式能编码 `Content.claudeSystemMessage`（Claude 消息中段 system 消息）。
+   * 只有 Claude 格式为 true；其余格式的编码入口遇到这种内容时报错（见 assertFormatAcceptsClaudeSystemMessages）。
+   */
+  readonly acceptsClaudeSystemMessages?: boolean;
+}
+
+/**
+ * Claude 专用的消息中段 system 消息不能交给别的格式：别的编码器只认 user/model，会把它当成一条普通 user 消息发出去。
+ * 这里在编码前直接报错，调用方必须只在 Claude 格式上使用它。
+ */
+export function assertFormatAcceptsClaudeSystemMessages(
+  request: Pick<LLMRequest, 'contents'>,
+  format: Pick<FormatAdapter, 'acceptsClaudeSystemMessages'>,
+  formatLabel: string,
+): void {
+  if (format.acceptsClaudeSystemMessages === true || !Array.isArray(request.contents)) return;
+  const index = request.contents.findIndex(content => content?.claudeSystemMessage !== undefined);
+  if (index >= 0) {
+    throw new Error(`contents[${index}] 是 Claude 专用的消息中段 system 消息，不能编码为 ${formatLabel} 请求。`);
+  }
 }
 
 /** 支持独立 compact / compaction 端点的格式适配器扩展。 */

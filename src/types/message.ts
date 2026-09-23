@@ -136,10 +136,28 @@ export interface UsageMetadata {
   cacheCreationInputTokensDetails?: CacheCreationInputTokensDetails;
 }
 
+/**
+ * Claude 消息中段 system 消息的选项（https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages）。
+ *
+ * - `clearAt: 'next_user_message'`：轮内系统消息，编码为 `clear_at: "next_user_message"`；
+ *   请求必须带 beta 头 `mid-conversation-system-clear-at-2026-08-21`，否则官方返回
+ *   `messages.N.clear_at: Extra inputs are not permitted`。
+ * - 缺省或 `'never'`：普通消息中段 system 消息，不写 `clear_at`（官方：省略与 `never` 相同）。
+ */
+export interface ClaudeSystemMessageOptions {
+  clearAt?: 'next_user_message' | 'never';
+}
+
 /** 一条消息内容（Gemini Content 格式） */
 export interface Content {
   role: Role;
   parts: Part[];
+  /**
+   * Claude 专用：把这条内容编码成 Messages API 的 `role: "system"` 消息。只能配 `role: 'user'` 且只含可见文本 part
+   * （一个 part 写成字符串，多个写成文本块数组）；位置必须符合官方规则，beta 头由调用方负责。
+   * 只有 Claude 格式会编码它；其他格式的编码入口遇到时直接报错，绝不把它当成一条 user 消息发出去。
+   */
+  claudeSystemMessage?: ClaudeSystemMessageOptions;
   /** provider 原生顶层 item 元数据；同 format 回放时可用于保留 id/status/phase 等字段 */
   providerContext?: ProviderContextItem;
   /** 该轮 API 调用的 Token 用量（存储用，组装请求时剥离） */
