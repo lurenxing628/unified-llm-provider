@@ -1250,3 +1250,105 @@ describe('B4 Responses 函数工具补 strict:false', () => {
     }]);
   });
 });
+
+describe('B5 explicit 缓存断点放到最后一个可承载块，不再追加空格假消息', () => {
+  // 依据：https://developers.openai.com/api/docs/guides/prompt-caching
+  // Explicit mode：“mark each desired breakpoint by adding prompt_cache_breakpoint: { "mode": "explicit" }
+  // to a supported content block inside an input message”；多轮 agent 示例把断点放在
+  // function_call_output 数组形式的 input_text 上。
+  const BREAKPOINT = { mode: 'explicit' };
+  const explicit = (model = 'gpt-5.6') => new OpenAIResponsesFormat(model, { enabled: true, mode: 'explicit' });
+
+  it('工具循环末尾是字符串 function_call_output：断点落在最后一条 user input_text，不追加假消息', () => {
+    const body = explicit().encodeRequest(TOOL_LOOP_REQUEST, true) as any;
+    expect(body.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'read a.txt', prompt_cache_breakpoint: BREAKPOINT }] },
+      { type: 'function_call', call_id: 'call_1', name: 'read_file', arguments: '{"path":"a.txt"}' },
+      { type: 'function_call_output', call_id: 'call_1', output: '{"content":"hello"}' },
+    ]);
+    expect(JSON.stringify(body)).not.toContain('"text":" "');
+  });
+
+  it('末尾 function_call_output 是数组形式时，断点落在它的最后一个内容块上', () => {
+    const body = explicit().encodeRequest({
+      contents: [
+        { role: 'user', parts: [{ text: 'shot' }] },
+        { role: 'model', parts: [{ functionCall: { name: 'screenshot', args: {}, callId: 'call_s' } }] },
+        { role: 'user', parts: [{ functionResponse: {
+          name: 'screenshot', response: { ok: true }, callId: 'call_s',
+          parts: [{ inlineData: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } }],
+        } }] },
+      ],
+    }, true) as any;
+    const output = body.input.at(-1);
+    expect(output.type).toBe('function_call_output');
+    expect(output.output.at(-1)).toMatchObject({ type: 'input_image', prompt_cache_breakpoint: BREAKPOINT });
+    expect(output.output[0].prompt_cache_breakpoint).toBeUndefined();
+    expect(body.input[0].content[0].prompt_cache_breakpoint).toBeUndefined();
+    expect(body.input).toHaveLength(3);
+  });
+
+  it('只打一个断点：更早的可承载块不重复标记', () => {
+    const body = explicit().encodeRequest({
+      contents: [
+        { role: 'user', parts: [{ text: 'q1' }] },
+        { role: 'model', parts: [{ text: 'a1' }] },
+        { role: 'user', parts: [{ text: 'q2' }] },
+        { role: 'model', parts: [{ functionCall: { name: 'a', args: {}, callId: 'call_1' } }] },
+        { role: 'user', parts: [{ functionResponse: { name: 'a', response: {}, callId: 'call_1' } }] },
+      ],
+    }, true) as any;
+    const marked = JSON.stringify(body.input).split('prompt_cache_breakpoint').length - 1;
+    expect(marked).toBe(1);
+    expect(body.input[2].content[0]).toEqual({ type: 'input_text', text: 'q2', prompt_cache_breakpoint: BREAKPOINT });
+  });
+
+  it('providerContext 原样回放的 user message 也可承载，且不改动存储里的原始 item', () => {
+    const rawUserItem = { id: 'msg_u1', type: 'message', status: 'completed', role: 'user', content: [{ type: 'input_text', text: 'first question' }] };
+    const rawCompaction = { id: 'cmp_1', type: 'compaction', encrypted_content: 'gAAAAB_cmp' };
+    const request: LLMRequest = {
+      contents: [
+        { role: 'user', parts: [{ providerContext: { provider: 'openai', format: 'openai-responses', endpoint: 'responses.compact', itemType: 'message', rawItem: rawUserItem } }] },
+        { role: 'model', parts: [{ providerContext: { provider: 'openai', format: 'openai-responses', endpoint: 'responses.compact', itemType: 'compaction', rawItem: rawCompaction } }] },
+      ],
+    };
+    const body = explicit().encodeRequest(request, true) as any;
+    expect(body.input).toEqual([
+      { ...rawUserItem, content: [{ type: 'input_text', text: 'first question', prompt_cache_breakpoint: BREAKPOINT }] },
+      rawCompaction,
+    ]);
+    expect((rawUserItem.content[0] as any).prompt_cache_breakpoint).toBeUndefined();
+  });
+
+  it('整个 input 没有可承载块时才退回旧做法（追加带断点的空格 user 消息）', () => {
+    const body = explicit().encodeRequest({
+      contents: [{ role: 'model', parts: [{ providerContext: {
+        provider: 'openai', format: 'openai-responses', endpoint: 'responses', itemType: 'compaction',
+        rawItem: { id: 'cmp_1', type: 'compaction', encrypted_content: 'gAAAAB_cmp' },
+      } }] }],
+    }, true) as any;
+    expect(body.input).toEqual([
+      { id: 'cmp_1', type: 'compaction', encrypted_content: 'gAAAAB_cmp' },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: ' ', prompt_cache_breakpoint: BREAKPOINT }] },
+    ]);
+  });
+
+  it('Astra explicit：开发者指令断点保持不变，工具循环末尾不再追加假消息', () => {
+    const body = explicit('gpt-6-astra').encodeRequest({
+      systemInstruction: { parts: [{ text: 'stable' }] },
+      ...TOOL_LOOP_REQUEST,
+    }, true) as any;
+    expect(body.instructions).toBeUndefined();
+    expect(body.input[0]).toEqual({ role: 'developer', content: [{ type: 'input_text', text: 'stable', prompt_cache_breakpoint: BREAKPOINT }] });
+    expect(body.input[1].content[0]).toEqual({ type: 'input_text', text: 'read a.txt', prompt_cache_breakpoint: BREAKPOINT });
+    expect(body.input).toHaveLength(4);
+  });
+
+  it('breakpoints.messages=false 时不打消息断点（与修复前一致）', () => {
+    const body = new OpenAIResponsesFormat('gpt-5.6', { enabled: true, mode: 'explicit', breakpoints: { messages: false } })
+      .encodeRequest(TOOL_LOOP_REQUEST, true) as any;
+    expect(JSON.stringify(body.input)).not.toContain('prompt_cache_breakpoint');
+    expect(body.input).toHaveLength(3);
+    expect(body.prompt_cache_options).toEqual({ mode: 'explicit', ttl: '30m' });
+  });
+});

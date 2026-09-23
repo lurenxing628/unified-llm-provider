@@ -256,7 +256,21 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       });
       delete body.instructions;
     }
-    if (this.promptCache.breakpoints.messages && !markLastOpenAIResponsesCacheableBlockAtRequestEnd(inputItems)) {
+    if (!this.promptCache.breakpoints.messages) return;
+    if (this.promptCache.mode === 'explicit') {
+      // B5：explicit 模式不再追加内容为空格的假 user 消息（模型会把它当成一条新的用户输入，
+      // 且下一次请求里不存在这条消息，断点前缀永远无法复用）。按参考文档把断点放在最后一个
+      // 可承载的内容块上：input 消息里的 input_text / input_image / input_file，以及
+      // function_call_output 的数组形式 output。只有整个 input 里都没有可承载块时才退回旧做法。
+      // 依据：https://developers.openai.com/api/docs/guides/prompt-caching（Explicit mode：
+      // “mark each desired breakpoint by adding prompt_cache_breakpoint ... to a supported content block
+      // inside an input message”；多轮 agent 示例把断点放在 function_call_output 的 input_text 上）。
+      if (!markLastOpenAIResponsesBreakpointCarrier(inputItems)) {
+        inputItems.push(createOpenAICacheMarkerMessage(' '));
+      }
+      return;
+    }
+    if (!markLastOpenAIResponsesCacheableBlockAtRequestEnd(inputItems)) {
       inputItems.push(createOpenAICacheMarkerMessage(' '));
     }
   }
@@ -646,6 +660,35 @@ function markLastOpenAIResponsesCacheableBlockAtRequestEnd(inputItems: any[]): b
   if (!isOpenAIResponsesCacheableContentBlock(lastBlock)) return false;
   lastBlock.prompt_cache_breakpoint = createOpenAIPromptCacheBreakpoint();
   return true;
+}
+
+/**
+ * 从请求末尾往前找最后一个能承载 prompt_cache_breakpoint 的 input item，在它的最后一个内容块上打断点。
+ * 可承载的 item：message（content 为数组）与 function_call_output（output 为数组）；
+ * 最后一个块必须是 input_text / input_image / input_file（OpenAPI 中接受 prompt_cache_breakpoint 的内容块）。
+ * 字符串形式的 function_call_output、assistant 的 output_text、reasoning、function_call 等不承载，跳过继续往前找。
+ * input 里的 item 都是本次编码新建或从 providerContext 克隆的对象，打断点不会改动存储的历史。
+ */
+function markLastOpenAIResponsesBreakpointCarrier(inputItems: any[]): boolean {
+  for (let index = inputItems.length - 1; index >= 0; index--) {
+    const blocks = getOpenAIResponsesBreakpointCarrierBlocks(inputItems[index]);
+    if (!blocks) continue;
+    const lastBlock = blocks[blocks.length - 1];
+    if (!isOpenAIResponsesCacheableContentBlock(lastBlock)) continue;
+    lastBlock.prompt_cache_breakpoint = createOpenAIPromptCacheBreakpoint();
+    return true;
+  }
+  return false;
+}
+
+function getOpenAIResponsesBreakpointCarrierBlocks(item: unknown): unknown[] | undefined {
+  if (!isPlainObject(item)) return undefined;
+  const blocks = item.type === 'function_call_output'
+    ? item.output
+    : item.type === undefined || item.type === 'message'
+      ? item.content
+      : undefined;
+  return Array.isArray(blocks) && blocks.length > 0 ? blocks : undefined;
 }
 
 function isOpenAIResponsesCacheableContentBlock(block: unknown): block is Record<string, unknown> {
