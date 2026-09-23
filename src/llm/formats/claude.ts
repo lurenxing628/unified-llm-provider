@@ -59,6 +59,34 @@ function readClaudeRedactedThinkingData(signature: string | undefined): string |
   return signature.slice(CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX.length);
 }
 
+/**
+ * Messages API 对 tool_use.id 与 tool_result.tool_use_id 的约束：`^[a-zA-Z0-9_-]+$`
+ * （https://platform.claude.com/docs/en/api/messages/create ToolUseBlockParam.id / ToolResultBlockParam.tool_use_id）。
+ */
+const CLAUDE_TOOL_USE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * 把其他渠道产生的工具调用 id（如 Kimi 风格 `functions.list_conversations:0`）改写成 Claude 接受的 id。
+ *
+ * - 已合规的 id 原样返回（官方 `toolu_...` 请求体逐字节不变）；
+ * - 不合规时把非法字符换成 `_`，再附加原始 id 的 FNV-1a 短哈希，避免只差非法字符的两个 id 改写后相撞；
+ * - 纯函数、确定性：同一请求内 tool_use.id 与 tool_result.tool_use_id 用同一个原始 id 改写，结果必然一致，
+ *   同一段历史每次编码得到相同请求体（不破坏 prompt cache 前缀）。存储里的原始 id 不变。
+ */
+function toClaudeToolUseId(id: string): string {
+  if (CLAUDE_TOOL_USE_ID_PATTERN.test(id)) return id;
+  return `${id.replace(/[^a-zA-Z0-9_-]/g, '_')}_${fnv1a32Hex(id)}`;
+}
+
+function fnv1a32Hex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
 export class ClaudeFormat implements FormatAdapter {
   private readonly promptCache: NormalizedClaudePromptCacheConfig;
 
@@ -124,7 +152,8 @@ export class ClaudeFormat implements FormatAdapter {
             const toolUseId = resolveCallId(part.functionCall.callId, `toolu_${generatedToolUseIdCounter++}`);
             contentBlocks.push({
               type: 'tool_use',
-              id: toolUseId,
+              // B3：pending 里保留原始 id 以便与 functionResponse.callId 配对，线上只发改写后的合规 id。
+              id: toClaudeToolUseId(toolUseId),
               name: part.functionCall.name,
               input: part.functionCall.args,
             });
@@ -149,7 +178,7 @@ export class ClaudeFormat implements FormatAdapter {
             });
             contentBlocks.push({
               type: 'tool_result',
-              tool_use_id: toolUseId,
+              tool_use_id: toClaudeToolUseId(toolUseId),
               content: encodeClaudeToolResultContent(part.functionResponse),
             });
           }

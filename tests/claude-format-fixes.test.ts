@@ -658,3 +658,100 @@ describe('B2 Claude redacted_thinking 保留并原样回放', () => {
     expect(decoded.content.parts).toEqual([{ text: 'ok' }]);
   });
 });
+
+describe('B3 Claude 工具调用 id 不合规时确定性改写', () => {
+  // 依据：Messages API ToolUseBlockParam.id / ToolResultBlockParam.tool_use_id 的 pattern `^[a-zA-Z0-9_-]+$`
+  // （https://platform.claude.com/docs/en/api/messages/create）。
+  const CLAUDE_ID = /^[a-zA-Z0-9_-]+$/;
+
+  function kimiHistory(): LLMRequest {
+    return {
+      contents: [
+        { role: 'user', parts: [{ text: 'list' }] },
+        { role: 'model', parts: [
+          { functionCall: { name: 'list_conversations', args: {}, callId: 'functions.list_conversations:0' } },
+          { functionCall: { name: 'list_conversations', args: { limit: 3 }, callId: 'functions.list_conversations:1' } },
+        ] },
+        { role: 'user', parts: [
+          { functionResponse: { name: 'list_conversations', response: { ok: 1 }, callId: 'functions.list_conversations:1' } },
+          { functionResponse: { name: 'list_conversations', response: { ok: 0 }, callId: 'functions.list_conversations:0' } },
+        ] },
+      ],
+    };
+  }
+
+  it('Kimi 风格 id 改写为合规 id，tool_use.id 与 tool_result.tool_use_id 一致对应', () => {
+    const body = encode(kimiHistory());
+    const [first, second] = body.messages[1].content;
+    const [resultForSecond, resultForFirst] = body.messages[2].content;
+
+    for (const id of [first.id, second.id, resultForFirst.tool_use_id, resultForSecond.tool_use_id]) {
+      expect(id).toMatch(CLAUDE_ID);
+    }
+    expect(first.id).toMatch(/^functions_list_conversations_0_[0-9a-f]{8}$/);
+    expect(resultForFirst.tool_use_id).toBe(first.id);
+    expect(resultForSecond.tool_use_id).toBe(second.id);
+    expect(first.id).not.toBe(second.id);
+  });
+
+  it('改写是确定性的：同一历史两次编码结果完全相同', () => {
+    expect(JSON.stringify(encode(kimiHistory()))).toBe(JSON.stringify(encode(kimiHistory())));
+  });
+
+  it('只差非法字符的两个 id 改写后不相撞', () => {
+    const body = encode({
+      contents: [
+        { role: 'user', parts: [{ text: 'go' }] },
+        { role: 'model', parts: [
+          { functionCall: { name: 'a', args: {}, callId: 'call.1' } },
+          { functionCall: { name: 'a', args: {}, callId: 'call:1' } },
+        ] },
+        { role: 'user', parts: [
+          { functionResponse: { name: 'a', response: {}, callId: 'call.1' } },
+          { functionResponse: { name: 'a', response: {}, callId: 'call:1' } },
+        ] },
+      ],
+    });
+    const ids = body.messages[1].content.map((block: any) => block.id);
+    expect(ids[0]).not.toBe(ids[1]);
+    expect(body.messages[2].content.map((block: any) => block.tool_use_id)).toEqual(ids);
+  });
+
+  it('工具结果没有 callId 时按顺序配对到改写后的 id', () => {
+    const body = encode({
+      contents: [
+        { role: 'user', parts: [{ text: 'go' }] },
+        { role: 'model', parts: [{ functionCall: { name: 'a', args: {}, callId: 'functions.a:0' } }] },
+        { role: 'user', parts: [{ functionResponse: { name: 'a', response: {} } }] },
+      ],
+    });
+    expect(body.messages[2].content[0].tool_use_id).toBe(body.messages[1].content[0].id);
+    expect(body.messages[1].content[0].id).toMatch(CLAUDE_ID);
+  });
+
+  it('合规 id（toolu_ / call_ / 带连字符）原样保留', () => {
+    const body = encode({
+      contents: [
+        { role: 'user', parts: [{ text: 'go' }] },
+        { role: 'model', parts: [
+          { functionCall: { name: 'a', args: {}, callId: 'toolu_01A09q90qw90lq917835lq9' } },
+          { functionCall: { name: 'a', args: {}, callId: 'call_abc-DEF_123' } },
+        ] },
+        { role: 'user', parts: [
+          { functionResponse: { name: 'a', response: {}, callId: 'toolu_01A09q90qw90lq917835lq9' } },
+          { functionResponse: { name: 'a', response: {}, callId: 'call_abc-DEF_123' } },
+        ] },
+      ],
+    });
+    expect(body.messages[1].content.map((block: any) => block.id)).toEqual(['toolu_01A09q90qw90lq917835lq9', 'call_abc-DEF_123']);
+    expect(body.messages[2].content.map((block: any) => block.tool_use_id)).toEqual(['toolu_01A09q90qw90lq917835lq9', 'call_abc-DEF_123']);
+  });
+
+  it('解码 Claude 响应时 tool_use.id 不改写（存储保留原始 id）', () => {
+    const decoded = new ClaudeFormat('claude-sonnet-4-6').decodeResponse({
+      content: [{ type: 'tool_use', id: 'toolu_01X', name: 'a', input: {} }],
+      stop_reason: 'tool_use',
+    });
+    expect((decoded.content.parts[0] as any).functionCall.callId).toBe('toolu_01X');
+  });
+});
