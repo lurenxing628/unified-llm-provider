@@ -185,6 +185,16 @@ export async function* processStreamResponse(
   }
 
   const state = format.createStreamState();
+  // 格式适配器自己产出的错误块（如工具参数被截断）只知道解码语义，这里补上 HTTP 上下文。
+  const withHttpErrorContext = (chunk: LLMStreamChunk): LLMStreamChunk => {
+    if (!chunk.error || chunk.error.status !== undefined) return chunk;
+    return {
+      ...chunk,
+      error: { ...chunk.error, status: res.status, statusText: res.statusText, headers },
+    };
+  };
+  let lastPayload: unknown;
+  let streamCompleted = false;
   try {
     for await (const sse of parseSSE(res)) {
       const parsed = tryParseJson(sse.data);
@@ -223,8 +233,9 @@ export async function* processStreamResponse(
         continue;
       }
 
+      lastPayload = payload;
       try {
-        const chunk = format.decodeStreamChunk(payload, state);
+        const chunk = withHttpErrorContext(format.decodeStreamChunk(payload, state));
         yield observeLlmObject(chunk, getLlmResponseObserver(res), () => ({
           kind: 'decoded', parent: getLlmObservation(payload), value: chunk,
         }));
@@ -241,6 +252,7 @@ export async function* processStreamResponse(
         }), getLlmObservation(payload));
       }
     }
+    streamCompleted = true;
   } catch (err) {
     yield observed(createErrorStreamChunk({
       kind: 'stream_read_error',
@@ -250,6 +262,26 @@ export async function* processStreamResponse(
       message: stringifyError(err),
     }));
   }
+
+  // 流正常结束（[DONE] 或 EOF）后给格式适配器一次补发机会；读取中断时流不完整，不补发。
+  if (!streamCompleted || typeof format.finalizeStream !== 'function') return;
+  const parent = getLlmObservation(lastPayload);
+  let finalChunk: LLMStreamChunk | undefined;
+  try {
+    finalChunk = format.finalizeStream(state);
+  } catch (err) {
+    yield observed(createErrorStreamChunk({
+      kind: 'decode_error',
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+      message: stringifyError(err),
+    }), parent);
+    return;
+  }
+  if (!finalChunk) return;
+  const chunk = withHttpErrorContext(finalChunk);
+  yield observeLlmObject(chunk, getLlmResponseObserver(res), () => ({ kind: 'decoded', parent, value: chunk }));
 }
 
 // ============ SSE 解析 ============

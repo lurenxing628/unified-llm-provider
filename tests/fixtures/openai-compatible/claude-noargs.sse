@@ -1,0 +1,5 @@
+data: {"id":"chatcmpl-f0JG4wgv9XbAdyb0EibtIogRAiNxI","object":"chat.completion.chunk","created":1790164540,"model":"claude-sonnet-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_012k3H6m6miaNTAcvNLTvN6d","type":"function","function":{"name":"list_items","arguments":""}}]},"logprobs":null,"finish_reason":null}],"usage":null,"system_fingerprint":"fp_d576307f90"}
+
+data: {"id":"chatcmpl-f0JG4wgv9XbAdyb0EibtIogRAiNxI","object":"chat.completion.chunk","created":1790164540,"model":"claude-sonnet-5","choices":[],"usage":{"prompt_tokens":899,"completion_tokens":27,"total_tokens":926},"system_fingerprint":"fp_d576307f90"}
+
+data: [DONE]

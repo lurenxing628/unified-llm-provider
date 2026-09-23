@@ -1,0 +1,290 @@
+{
+  "claude-noargs.sse": [
+    {},
+    {
+      "usageMetadata": {
+        "promptTokenCount": 899,
+        "candidatesTokenCount": 27,
+        "totalTokenCount": 926
+      }
+    }
+  ],
+  "claude-two-noargs.sse": [
+    {},
+    {
+      "functionCalls": [
+        {
+          "functionCall": {
+            "name": "list_items",
+            "args": {},
+            "callId": "toolu_0158ATFP4c5wLpPvPCDUvDQU"
+          }
+        }
+      ],
+      "partsDelta": [
+        {
+          "functionCall": {
+            "name": "list_items",
+            "args": {},
+            "callId": "toolu_0158ATFP4c5wLpPvPCDUvDQU"
+          }
+        }
+      ]
+    },
+    {
+      "usageMetadata": {
+        "promptTokenCount": 895,
+        "candidatesTokenCount": 51,
+        "totalTokenCount": 946
+      }
+    }
+  ],
+  "gpt-noargs.sse": [
+    {},
+    {
+      "functionCalls": [
+        {
+          "functionCall": {
+            "name": "list_items",
+            "args": {},
+            "callId": "call_2CM24w92TYPS2dbcmCwBVOpy"
+          }
+        }
+      ],
+      "partsDelta": [
+        {
+          "functionCall": {
+            "name": "list_items",
+            "args": {},
+            "callId": "call_2CM24w92TYPS2dbcmCwBVOpy"
+          }
+        }
+      ]
+    },
+    {
+      "finishReason": "tool_calls"
+    },
+    {
+      "usageMetadata": {
+        "promptTokenCount": 69,
+        "candidatesTokenCount": 14,
+        "totalTokenCount": 83
+      }
+    }
+  ],
+  "tools-claude-sonnet-5.sse": [
+    {},
+    {},
+    {},
+    {
+      "functionCalls": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Paris"
+            },
+            "callId": "toolu_01LTCtbrto4cX1iMy5Abkv7s"
+          }
+        }
+      ],
+      "partsDelta": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Paris"
+            },
+            "callId": "toolu_01LTCtbrto4cX1iMy5Abkv7s"
+          }
+        }
+      ]
+    },
+    {},
+    {},
+    {},
+    {
+      "functionCalls": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Tokyo"
+            },
+            "callId": "toolu_01TokYfC8u53ZnJqJdZwL9tM"
+          }
+        }
+      ],
+      "partsDelta": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Tokyo"
+            },
+            "callId": "toolu_01TokYfC8u53ZnJqJdZwL9tM"
+          }
+        }
+      ]
+    },
+    {
+      "usageMetadata": {
+        "promptTokenCount": 870,
+        "candidatesTokenCount": 132,
+        "totalTokenCount": 1002
+      }
+    }
+  ],
+  "tools-gpt-5.5.sse": [
+    {},
+    {
+      "functionCalls": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Paris"
+            },
+            "callId": "call_41iEDU0dF2XFN60LsDuBh0wS"
+          }
+        }
+      ],
+      "partsDelta": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Paris"
+            },
+            "callId": "call_41iEDU0dF2XFN60LsDuBh0wS"
+          }
+        }
+      ]
+    },
+    {},
+    {
+      "functionCalls": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Tokyo"
+            },
+            "callId": "call_vC6ERFPh9E2KhQqqtLojKAGZ"
+          }
+        }
+      ],
+      "partsDelta": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Tokyo"
+            },
+            "callId": "call_vC6ERFPh9E2KhQqqtLojKAGZ"
+          }
+        }
+      ]
+    },
+    {
+      "finishReason": "tool_calls"
+    },
+    {
+      "usageMetadata": {
+        "promptTokenCount": 66,
+        "candidatesTokenCount": 48,
+        "totalTokenCount": 114
+      }
+    }
+  ],
+  "tools-v-gemini-3.5-flash.sse": [
+    {
+      "partsDelta": [
+        {
+          "text": "**Executing Weather Calls**\n\nI'm currently preparing to execute parallel calls to `get_weather` for Paris and Tokyo. My next step is to construct the necessary tool calls for each city.\n\n",
+          "thought": true
+        }
+      ]
+    },
+    {},
+    {
+      "functionCalls": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Paris"
+            },
+            "callId": "call_027ec3edfd5b45d484244ef8"
+          }
+        }
+      ],
+      "partsDelta": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Paris"
+            },
+            "callId": "call_027ec3edfd5b45d484244ef8"
+          }
+        }
+      ]
+    },
+    {},
+    {
+      "functionCalls": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Tokyo"
+            },
+            "callId": "call_eda4f0a2e8b740598fd11a69"
+          }
+        }
+      ],
+      "partsDelta": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Tokyo"
+            },
+            "callId": "call_eda4f0a2e8b740598fd11a69"
+          }
+        }
+      ]
+    },
+    {
+      "finishReason": "stop"
+    },
+    {
+      "usageMetadata": {
+        "promptTokenCount": 44,
+        "candidatesTokenCount": 32,
+        "totalTokenCount": 279
+      }
+    }
+  ],
+  "claude-noargs-nostream.json": {
+    "content": {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "ListItems",
+            "args": {},
+            "callId": "toolu_01PZV5iZ6AR5wJxCspiRuzyS"
+          }
+        }
+      ]
+    },
+    "finishReason": "tool_calls",
+    "usageMetadata": {
+      "promptTokenCount": 886,
+      "candidatesTokenCount": 27,
+      "totalTokenCount": 913
+    }
+  }
+}

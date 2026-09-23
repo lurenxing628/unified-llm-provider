@@ -218,7 +218,7 @@ export class OpenAICompatibleFormat implements FormatAdapter {
         parts.push({
           functionCall: {
             name: tc.function.name,
-            args: JSON.parse(tc.function.arguments),
+            args: decodeNonStreamToolArguments(tc, choice.finish_reason),
             callId: normalizeCallId(tc.id),
           },
         });
@@ -282,56 +282,28 @@ export class OpenAICompatibleFormat implements FormatAdapter {
     // 但有一个规律：当 delta 中出现新的 tool_call index 时，说明前一个 index 的
     // 参数已经流完了。利用这个规律，在新 index 出现时立即输出前一个已完成的工具调用，
     // 让 StreamingToolExecutor 可以在 LLM 还在输出后续工具参数时提前启动执行。
-    // finish_reason 到达时，最后一个工具也输出。
-    const pending = state.pendingToolCalls as Map<number, { callId?: string; name: string; arguments: string; emitted?: boolean }>;
-    const emitPendingToolCall = (
-      entry: { callId?: string; name: string; arguments: string; emitted?: boolean },
-      options?: { allowEmptyArgs?: boolean },
-    ) => {
-      if (entry.emitted || !entry.name) return;
-      const rawArgs = entry.arguments ?? '';
-      if (!rawArgs.trim() && !options?.allowEmptyArgs) {
-        // OpenAI-compatible providers often send an initial tool_call delta with
-        // function.name and arguments="", followed by later arguments fragments.
-        // Treating empty arguments as {} here would prematurely emit the tool
-        // call and drop subsequent argument deltas.
-        return;
-      }
-      try {
-        const args = rawArgs.trim() ? JSON.parse(rawArgs) : {};
-        if (!args || typeof args !== 'object' || Array.isArray(args)) return;
-        if (!chunk.functionCalls) chunk.functionCalls = [];
-        chunk.functionCalls.push({
-          functionCall: {
-            name: entry.name,
-            args,
-            callId: entry.callId,
-          },
-        });
-        chunk.partsDelta = [
-          ...(chunk.partsDelta || []),
-          chunk.functionCalls[chunk.functionCalls.length - 1],
-        ];
-        entry.emitted = true;
-      } catch {
-        // 参数 JSON 尚未完整，等待后续 delta 或 finish_reason。
-      }
-    };
+    // finish_reason 到达时，最后一个工具也输出；上游没有 finish_reason 时由 finalizeStream 补发。
+    const streamState = state as OpenAICompatibleStreamState;
+    const pending = streamState.pendingToolCalls;
+    const emitPendingToolCall = (entry: PendingStreamToolCall, options?: { allowEmptyArgs?: boolean }) =>
+      emitStreamToolCall(chunk, entry, options);
     if (choice?.delta?.tool_calls) {
       for (const tc of choice.delta.tool_calls) {
-        // 新 index 出现时，前面未输出的工具调用的参数一定已经完整，立即输出
-        if (!pending.has(tc.index) && pending.size > 0) {
+        const key = resolveStreamToolCallKey(streamState, tc);
+        // 新调用出现时，前面未输出的工具调用的参数一定已经完整，立即输出
+        if (!pending.has(key) && pending.size > 0) {
           for (const [, entry] of pending) {
             emitPendingToolCall(entry, { allowEmptyArgs: true });
           }
         }
-        if (!pending.has(tc.index)) {
-          pending.set(tc.index, { callId: undefined, name: '', arguments: '', emitted: false });
+        if (!pending.has(key)) {
+          pending.set(key, { callId: undefined, name: '', arguments: '', emitted: false });
         }
-        const entry = pending.get(tc.index)!;
+        streamState.lastToolCallKey = key;
+        const entry = pending.get(key)!;
         if (tc.id) entry.callId = normalizeCallId(tc.id) ?? entry.callId;
         if (tc.function?.name) entry.name = tc.function.name;
-        if (tc.function?.arguments) entry.arguments += tc.function.arguments;
+        appendStreamToolArguments(entry, tc.function?.arguments);
         // 单个 tool_call 没有“下一个 index”可作为完成信号；当参数 JSON 已经完整时立即输出，
         // 让 AskQuestionFirst 这类交互工具可以在 message 结束前显示面板。
         emitPendingToolCall(entry);
@@ -341,10 +313,17 @@ export class OpenAICompatibleFormat implements FormatAdapter {
     if (choice?.finish_reason) {
       chunk.finishReason = choice.finish_reason;
       if (pending.size > 0) {
+        const failures: FailedStreamToolCall[] = [];
         for (const [, entry] of pending) {
-          emitPendingToolCall(entry, { allowEmptyArgs: true });
+          const problem = emitPendingToolCall(entry, { allowEmptyArgs: true });
+          if (problem) failures.push({ entry, problem });
         }
         pending.clear();
+        streamState.lastToolCallKey = undefined;
+        if (failures.length > 0) {
+          // 参数不完整（多为 finish_reason=length 截断）的调用不再静默丢弃，按解码错误上报。
+          return createToolArgumentsErrorChunk(failures, choice.finish_reason, data);
+        }
       }
     }
 
@@ -367,9 +346,216 @@ export class OpenAICompatibleFormat implements FormatAdapter {
   }
 
   createStreamState(): StreamDecodeState {
-    return {
-      pendingToolCalls: new Map<number, { callId?: string; name: string; arguments: string; emitted?: boolean }>(),
+    const state: OpenAICompatibleStreamState = {
+      pendingToolCalls: new Map<number | string, PendingStreamToolCall>(),
+      anonymousToolCallCount: 0,
     };
+    return state;
+  }
+
+  /**
+   * 流结束（[DONE] / EOF）后补发仍在等待的工具调用。
+   *
+   * 部分网关（实测：把 Chat Completions 转成其他协议的中转）在工具调用流里不发 finish_reason，
+   * 最后一个调用（尤其是 arguments 为空串的无参数调用）永远等不到输出信号。流已正常结束时，
+   * 空参数按 `{}` 发出；参数 JSON 不完整的调用视为被截断，返回解码错误块而不是静默丢弃。
+   */
+  finalizeStream(state: StreamDecodeState): LLMStreamChunk | undefined {
+    const streamState = state as OpenAICompatibleStreamState;
+    const pending = streamState.pendingToolCalls;
+    if (!pending || pending.size === 0) return undefined;
+
+    const chunk: LLMStreamChunk = {};
+    const failures: FailedStreamToolCall[] = [];
+    for (const [, entry] of pending) {
+      const problem = emitStreamToolCall(chunk, entry, { allowEmptyArgs: true });
+      if (problem) failures.push({ entry, problem });
+    }
+    pending.clear();
+    streamState.lastToolCallKey = undefined;
+    if (failures.length > 0) {
+      return createToolArgumentsErrorChunk(failures, undefined, {
+        tool_calls: failures.map(({ entry }) => ({
+          id: entry.callId,
+          function: { name: entry.name, arguments: entry.arguments },
+        })),
+      });
+    }
+    return chunk.functionCalls?.length ? chunk : undefined;
+  }
+}
+
+// ============ 流式工具调用累积 ============
+
+interface PendingStreamToolCall {
+  callId?: string;
+  name: string;
+  arguments: string;
+  emitted?: boolean;
+}
+
+interface OpenAICompatibleStreamState extends StreamDecodeState {
+  pendingToolCalls: Map<number | string, PendingStreamToolCall>;
+  /** 最近一次写入的调用；既没有 index 也没有 id 的续传分片归到这里。 */
+  lastToolCallKey?: number | string;
+  anonymousToolCallCount: number;
+}
+
+type StreamToolArgumentsProblem = 'incomplete' | 'not_object';
+
+interface FailedStreamToolCall {
+  entry: PendingStreamToolCall;
+  problem: StreamToolArgumentsProblem;
+}
+
+/**
+ * 为一个 tool_call delta 找到它所属的累积条目。
+ *
+ * 带 index 的分片（OpenAI 官方流式格式）按 index 归并，行为与以前完全一致。
+ * 个别兼容实现的 delta 不带 index：此时按 id 区分调用（已见过的 id 续写原调用，新 id 视为新调用），
+ * 既没有 index 也没有 id 的分片是上一个调用的参数续传。以前这些分片都落在 `undefined` 这个 key 上，
+ * 并行调用会被拼成一条参数错乱的调用。
+ */
+function resolveStreamToolCallKey(state: OpenAICompatibleStreamState, tc: any): number | string {
+  if (typeof tc?.index === 'number') return tc.index;
+  const id = normalizeCallId(tc?.id);
+  if (id) {
+    for (const [key, entry] of state.pendingToolCalls) {
+      if (entry.callId === id) return key;
+    }
+    return `id:${id}`;
+  }
+  if (state.lastToolCallKey !== undefined && state.pendingToolCalls.has(state.lastToolCallKey)) {
+    return state.lastToolCallKey;
+  }
+  state.anonymousToolCallCount += 1;
+  return `anonymous:${state.anonymousToolCallCount}`;
+}
+
+function appendStreamToolArguments(entry: PendingStreamToolCall, value: unknown): void {
+  if (typeof value === 'string') {
+    if (value) entry.arguments += value;
+    return;
+  }
+  // 少数兼容实现直接给出已解析的参数对象；按完整 JSON 文本累积。
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    entry.arguments += JSON.stringify(value);
+  }
+}
+
+function parseStreamToolArguments(rawArgs: string): { args: Record<string, unknown> } | { problem: StreamToolArgumentsProblem } {
+  if (!rawArgs.trim()) return { args: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawArgs);
+  } catch {
+    return { problem: 'incomplete' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { problem: 'not_object' };
+  return { args: parsed as Record<string, unknown> };
+}
+
+/**
+ * 尝试把一个累积中的调用写进 chunk。成功或还不该输出时返回 undefined；
+ * 参数无法解析时返回问题类型，由调用方决定继续等待还是上报错误。
+ */
+function emitStreamToolCall(
+  chunk: LLMStreamChunk,
+  entry: PendingStreamToolCall,
+  options?: { allowEmptyArgs?: boolean },
+): StreamToolArgumentsProblem | undefined {
+  if (entry.emitted || !entry.name) return undefined;
+  const rawArgs = entry.arguments ?? '';
+  if (!rawArgs.trim() && !options?.allowEmptyArgs) {
+    // OpenAI-compatible providers often send an initial tool_call delta with
+    // function.name and arguments="", followed by later arguments fragments.
+    // Treating empty arguments as {} here would prematurely emit the tool
+    // call and drop subsequent argument deltas.
+    return undefined;
+  }
+  const parsed = parseStreamToolArguments(rawArgs);
+  // 参数 JSON 尚未完整时继续等待后续 delta / finish_reason / 流结束。
+  if ('problem' in parsed) return parsed.problem;
+  if (!chunk.functionCalls) chunk.functionCalls = [];
+  const part = {
+    functionCall: {
+      name: entry.name,
+      args: parsed.args,
+      callId: entry.callId,
+    },
+  };
+  chunk.functionCalls.push(part);
+  chunk.partsDelta = [...(chunk.partsDelta || []), part];
+  entry.emitted = true;
+  return undefined;
+}
+
+const TOOL_ARGUMENTS_PREVIEW_CHARS = 200;
+
+function previewToolArguments(rawArgs: string): string {
+  return rawArgs.length > TOOL_ARGUMENTS_PREVIEW_CHARS
+    ? `${rawArgs.slice(0, TOOL_ARGUMENTS_PREVIEW_CHARS)}…`
+    : rawArgs;
+}
+
+function describeToolCall(name: unknown, callId: unknown): string {
+  const label = typeof name === 'string' && name ? `"${name}"` : '(unknown tool)';
+  return typeof callId === 'string' && callId ? `${label}（${callId}）` : label;
+}
+
+function describeToolArgumentsProblem(
+  name: unknown,
+  callId: unknown,
+  rawArgs: string,
+  problem: StreamToolArgumentsProblem,
+  finishReason?: string,
+): string {
+  const call = describeToolCall(name, callId);
+  if (problem === 'not_object') {
+    return `工具调用 ${call} 的参数不是 JSON 对象：${previewToolArguments(rawArgs)}`;
+  }
+  const reason = finishReason ? `finish_reason: ${finishReason}` : '流结束时仍未收到完整参数';
+  return `工具调用 ${call} 的参数 JSON 不完整，参数可能被截断（${reason}，已收到 ${rawArgs.length} 个字符）：${previewToolArguments(rawArgs)}`;
+}
+
+function createToolArgumentsErrorChunk(
+  failures: FailedStreamToolCall[],
+  finishReason: string | undefined,
+  rawChunk: unknown,
+): LLMStreamChunk {
+  const message = failures
+    .map(({ entry, problem }) => describeToolArgumentsProblem(entry.name, entry.callId, entry.arguments, problem, finishReason))
+    .join('\n');
+  return {
+    error: { kind: 'decode_error', message, rawChunk },
+    rawChunk,
+    ...(finishReason ? { finishReason } : {}),
+  };
+}
+
+/**
+ * 非流式 tool_calls[].function.arguments 解码。
+ *
+ * OpenAI 文档：arguments 是模型生成的 JSON 字符串，“the model does not always generate valid JSON”
+ * （https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create/）。
+ * 兼容实现里还会见到空串（无参数调用）或已经解析好的对象，这两种按 `{}` / 原对象接受；
+ * 真正无法解析的 JSON 仍然失败，但错误信息写明工具名并提示参数可能被截断。
+ */
+function decodeNonStreamToolArguments(tc: any, finishReason?: string): Record<string, unknown> {
+  const raw = tc?.function?.arguments;
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw === 'object') {
+    if (Array.isArray(raw)) {
+      throw new Error(describeToolArgumentsProblem(tc?.function?.name, tc?.id, JSON.stringify(raw), 'not_object', finishReason));
+    }
+    return raw as Record<string, unknown>;
+  }
+  const text = String(raw);
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(describeToolArgumentsProblem(tc?.function?.name, tc?.id, text, 'incomplete', finishReason));
   }
 }
 

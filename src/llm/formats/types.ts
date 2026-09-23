@@ -24,6 +24,15 @@ export interface FormatAdapter {
 
   /** 创建流式解码状态（每次流式调用前调用） */
   createStreamState(): StreamDecodeState;
+
+  /**
+   * 可选：流正常结束（`data: [DONE]` 或 EOF）后调用一次，返回需要补发的最后一块。
+   *
+   * 用于上游没有给出结束信号（如缺少 finish_reason）时，把仍在 state 里等待的内容
+   * （未发出的工具调用、跨块累积的签名等）交给调用方。没有需要补发的内容时返回 undefined，
+   * 此时流的输出与未实现该钩子时完全一致。读取中断（stream_read_error）时不会调用。
+   */
+  finalizeStream?(state: StreamDecodeState): LLMStreamChunk | undefined;
 }
 
 /** 支持独立 compact / compaction 端点的格式适配器扩展。 */
