@@ -56,43 +56,41 @@ export class ClaudeFormat implements FormatAdapter {
 
     for (const content of request.contents) {
       const textParts = content.parts.filter(isVisibleTextPart);
-      const funcCallParts = content.parts.filter(isFunctionCallPart);
       const funcRespParts = content.parts.filter(isFunctionResponsePart);
 
       if (content.role === 'model') {
         const contentBlocks: Record<string, unknown>[] = [];
 
-        // 思考部分 (Claude Thinking) — 必须在 text 之前。
-        // 即便没有 Claude 签名，也保留 thought 文本，避免跨格式转换时丢失 reasoning/thinking 内容。
+        // thinking / text / tool_use 按存储顺序逐个编码，不再把思考块整体挪到最前。
+        // 依据：Messages API ThinkingBlockParam “Thinking blocks must be passed back unmodified
+        // and in their original order”；thinking 文档 Preserving thinking blocks：同一 assistant
+        // 消息内的思考块序列须与模型生成时一致，不能重排
+        // （https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks）。
+        // 交错思考（interleaved thinking）会产出 [thinking, text, thinking, tool_use]，
+        // 旧实现会改写成 [thinking, thinking, text, tool_use]。
         for (const part of content.parts) {
-          if (!isTextPart(part) || part.thought !== true) continue;
-          const sig = part.thoughtSignatures?.claude;
-          const thinkingText = part.text || '';
-          if (!thinkingText && !sig) continue;
-          contentBlocks.push({
-            type: 'thinking',
-            thinking: thinkingText,
-            ...(sig ? { signature: sig } : {}),
-          });
-        }
-
-        // 文本部分
-        for (const part of textParts) {
-          if (!isTextPart(part)) continue;
-          if (part.text) contentBlocks.push({ type: 'text', text: part.text });
-        }
-
-        // 工具调用部分
-        for (const part of funcCallParts) {
-          if (!isFunctionCallPart(part)) continue;
-          const toolUseId = resolveCallId(part.functionCall.callId, `toolu_${generatedToolUseIdCounter++}`);
-          contentBlocks.push({
-            type: 'tool_use',
-            id: toolUseId,
-            name: part.functionCall.name,
-            input: part.functionCall.args,
-          });
-          pendingToolUseIds.push(toolUseId);
+          if (isTextPart(part) && part.thought === true) {
+            // 即便没有 Claude 签名，也保留 thought 文本，避免跨格式转换时丢失 reasoning/thinking 内容。
+            const sig = part.thoughtSignatures?.claude;
+            const thinkingText = part.text || '';
+            if (!thinkingText && !sig) continue;
+            contentBlocks.push({
+              type: 'thinking',
+              thinking: thinkingText,
+              ...(sig ? { signature: sig } : {}),
+            });
+          } else if (isVisibleTextPart(part)) {
+            if (part.text) contentBlocks.push({ type: 'text', text: part.text });
+          } else if (isFunctionCallPart(part)) {
+            const toolUseId = resolveCallId(part.functionCall.callId, `toolu_${generatedToolUseIdCounter++}`);
+            contentBlocks.push({
+              type: 'tool_use',
+              id: toolUseId,
+              name: part.functionCall.name,
+              input: part.functionCall.args,
+            });
+            pendingToolUseIds.push(toolUseId);
+          }
         }
 
         if (contentBlocks.length > 0) {
