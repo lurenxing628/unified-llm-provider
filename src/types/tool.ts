@@ -15,6 +15,8 @@ export interface FunctionDeclaration {
     properties: Record<string, Record<string, unknown>>;
     required?: string[];
   };
+  /** LimCode Astra 扩展：显式配置的原生异步工具声明，编码为 Responses function tool 的 async:true。 */
+  async?: boolean;
 }
 
 /** 工具调用状态 */

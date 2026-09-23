@@ -7,6 +7,7 @@
 
 import type { LLMRawErrorInfo, LLMResponse, LLMStreamChunk } from '../types.js';
 import type { FormatAdapter } from './formats/types.js';
+import { getLlmResponseObserver, getLlmObservation, observeLlmObject, LlmSseObservation } from './observation.js';
 
 // ============ 通用错误透传 ============
 
@@ -38,6 +39,7 @@ function tryParseJson(text: string): { ok: true; value: unknown } | { ok: false 
 async function readResponseBody(res: Response): Promise<{ bodyText: string; rawBody?: unknown }> {
   const bodyText = await res.text();
   const parsed = tryParseJson(bodyText);
+  observeLlmObject(parsed, getLlmResponseObserver(res), () => ({ kind: 'body', value: bodyText }));
   return parsed.ok ? { bodyText, rawBody: parsed.value } : { bodyText };
 }
 
@@ -119,33 +121,35 @@ export async function processResponse(
   const headers = headersToRecord(res.headers);
   const { bodyText, rawBody } = await readResponseBody(res);
   const rawResponse = rawBody ?? bodyText;
+  const observed = (chunk: LLMResponse) => observeLlmObject(chunk, getLlmResponseObserver(res), () => ({ kind: 'decoded', value: chunk }));
 
   if (!res.ok) {
-    return createErrorResponse({
+    return observed(createErrorResponse({
       kind: 'http_error',
       status: res.status,
       statusText: res.statusText,
       headers,
       bodyText,
       ...(rawBody !== undefined ? { rawBody } : {}),
-    });
+    }));
   }
 
   if (isProviderErrorPayload(rawResponse)) {
-    return createErrorResponse({
+    return observed(createErrorResponse({
       kind: 'response_error',
       status: res.status,
       statusText: res.statusText,
       headers,
       bodyText,
       rawBody: rawResponse,
-    });
+    }));
   }
 
   try {
-    return format.decodeResponse(rawResponse);
+    const result = format.decodeResponse(rawResponse);
+    return observeLlmObject(result, getLlmResponseObserver(res), () => ({ kind: 'decoded', value: result }));
   } catch (err) {
-    return createErrorResponse({
+    return observed(createErrorResponse({
       kind: 'decode_error',
       status: res.status,
       statusText: res.statusText,
@@ -153,7 +157,7 @@ export async function processResponse(
       bodyText,
       rawBody: rawResponse,
       message: stringifyError(err),
-    });
+    }));
   }
 }
 
@@ -165,17 +169,18 @@ export async function* processStreamResponse(
   format: FormatAdapter,
 ): AsyncGenerator<LLMStreamChunk> {
   const headers = headersToRecord(res.headers);
+  const observed = (chunk: LLMStreamChunk, parent?: unknown) => observeLlmObject(chunk, getLlmResponseObserver(res), () => ({ kind: 'decoded', value: chunk, parent }));
 
   if (!res.ok) {
     const { bodyText, rawBody } = await readResponseBody(res);
-    yield createErrorStreamChunk({
+    yield observed(createErrorStreamChunk({
       kind: 'http_error',
       status: res.status,
       statusText: res.statusText,
       headers,
       bodyText,
       ...(rawBody !== undefined ? { rawBody } : {}),
-    });
+    }));
     return;
   }
 
@@ -184,7 +189,7 @@ export async function* processStreamResponse(
     for await (const sse of parseSSE(res)) {
       const parsed = tryParseJson(sse.data);
       if (!parsed.ok) {
-        yield createErrorStreamChunk({
+        yield observed(createErrorStreamChunk({
           kind: 'stream_parse_error',
           status: res.status,
           statusText: res.statusText,
@@ -194,16 +199,19 @@ export async function* processStreamResponse(
           bodyText: sse.data,
           message: `SSE data 不是 JSON: ${sse.data}`,
           rawChunk: sse.data,
-        });
+        }), getLlmObservation(sse));
         continue;
       }
 
       const payload = isPlainObject(parsed.value)
         ? { ...parsed.value, ...(sse.event ? { event: sse.event } : {}) }
         : parsed.value;
+      observeLlmObject(payload, getLlmResponseObserver(res), () => ({
+        kind: 'decode_input', parent: getLlmObservation(sse), value: payload,
+      }));
 
       if (isProviderErrorPayload(payload, sse.event)) {
-        yield createErrorStreamChunk({
+        yield observed(createErrorStreamChunk({
           kind: 'stream_error',
           status: res.status,
           statusText: res.statusText,
@@ -211,14 +219,17 @@ export async function* processStreamResponse(
           event: sse.event ?? stringField(isPlainObject(payload) ? payload.event : undefined),
           data: sse.data,
           rawChunk: payload,
-        });
+        }), getLlmObservation(payload));
         continue;
       }
 
       try {
-        yield format.decodeStreamChunk(payload, state);
+        const chunk = format.decodeStreamChunk(payload, state);
+        yield observeLlmObject(chunk, getLlmResponseObserver(res), () => ({
+          kind: 'decoded', parent: getLlmObservation(payload), value: chunk,
+        }));
       } catch (err) {
-        yield createErrorStreamChunk({
+        yield observed(createErrorStreamChunk({
           kind: 'decode_error',
           status: res.status,
           statusText: res.statusText,
@@ -227,17 +238,17 @@ export async function* processStreamResponse(
           data: sse.data,
           rawChunk: payload,
           message: stringifyError(err),
-        });
+        }), getLlmObservation(payload));
       }
     }
   } catch (err) {
-    yield createErrorStreamChunk({
+    yield observed(createErrorStreamChunk({
       kind: 'stream_read_error',
       status: res.status,
       statusText: res.statusText,
       headers,
       message: stringifyError(err),
-    });
+    }));
   }
 }
 
@@ -262,6 +273,8 @@ async function* parseSSE(response: Response): AsyncGenerator<SSEChunk> {
   let currentEvent: string | undefined;
   let dataLines: string[] = [];
   let chunksRead = 0;
+  const observer = getLlmResponseObserver(response);
+  const observation = observer ? new LlmSseObservation(observer) : undefined;
 
   const dispatch = (): SSEChunk | 'done' | undefined => {
     const data = dataLines.join('\n');
@@ -269,8 +282,10 @@ async function* parseSSE(response: Response): AsyncGenerator<SSEChunk> {
     dataLines = [];
     currentEvent = undefined;
 
+    const chunk = data ? { event, data } : undefined;
+    observation?.dispatch(chunk, data, event);
     if (data === '[DONE]') return 'done';
-    return data ? { event, data } : undefined;
+    return chunk;
   };
 
   const handleLine = (rawLine: string): SSEChunk | 'done' | undefined => {
@@ -299,6 +314,7 @@ async function* parseSSE(response: Response): AsyncGenerator<SSEChunk> {
       const { done, value } = await reader.read();
       if (done) break;
       chunksRead++;
+      observation?.read(value);
 
       buffer += decoder.decode(value, { stream: true });
 
@@ -306,12 +322,14 @@ async function* parseSSE(response: Response): AsyncGenerator<SSEChunk> {
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
+        observation?.line();
         const chunk = handleLine(line);
         if (chunk === 'done') return;
         if (chunk) yield chunk;
       }
     }
 
+    observation?.end();
     buffer += decoder.decode();
     if (buffer) {
       const lines = buffer.split('\n');

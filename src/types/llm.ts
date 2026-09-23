@@ -4,7 +4,7 @@
  * 内部统一使用 Gemini 格式。各 LLM Provider 负责与自身 API 格式互转。
  */
 
-import { Content, Part, UsageMetadata, FunctionCallPart } from './message.js';
+import { Content, Part, UsageMetadata, FunctionCallPart, LimcodeOutputItemReference} from './message.js';
 import { FunctionDeclaration } from './tool.js';
 
 export interface LLMThinkingConfig {
@@ -167,4 +167,33 @@ export interface LLMStreamChunk {
   error?: LLMRawErrorInfo;
   /** 上游原始 SSE 块；错误 chunk 会尽量保留。 */
   rawChunk?: unknown;
+  /**
+   * LimCode Astra 扩展：response 生命周期观察。HTTP/SSE 原生解码模式只产出
+   * created/completed/incomplete（无 WS 物理身份）；完整事件面（含 steering 与连接代）
+   * 由 LimCode WebSocket 会话在自身 chunk 上权威产出，字段形状与 shared 原生事件保持一致。
+   */
+  nativeEvent?: {
+    type: 'response.created' | 'response.completed' | 'response.incomplete'
+      | 'response.steer.submitted' | 'response.steer.accepted' | 'response.steer.pending'
+      | 'response.steer.failed' | 'response.steer.disconnected';
+    responseId: string;
+    connectionGeneration?: number;
+    previousResponseId?: string;
+    streamId?: string;
+    responseCreateSeq?: string;
+    submissionId?: string;
+    steerId?: string;
+    input?: Array<{ role: string; parts: unknown[] }>;
+    requiredInput?: Array<Record<string, unknown>>;
+    content?: { role: string; parts: unknown[] };
+    reason?: string;
+    error?: { code?: string; message: string };
+    usage?: Record<string, unknown>;
+    admittedToolResultCallIds?: string[];
+    capabilities?: Record<string, unknown>;
+  };
+  /** LimCode Astra 扩展（同上）：终端 response 解码出的有序输出内容。 */
+  completedContents?: Content[];
+  /** LimCode Astra 扩展（同上）：本 chunk 归属的 output item 稳定引用（SSE output_index/item_id）。 */
+  outputItem?: LimcodeOutputItemReference;
 }

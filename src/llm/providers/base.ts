@@ -10,6 +10,7 @@ import { detectLLMRequestSignatureRepresentation } from '../../signatures/normal
 import { buildRequestTransport, sendRequest, type EndpointConfig } from '../transport.js';
 import type { LLMProxyOption } from '../../config/types.js';
 import { processResponse, processStreamResponse } from '../response.js';
+import { carryLlmObservation } from '../observation.js';
 import { streamOpenAIResponsesWebSocket } from '../websocket-openai-responses.js';
 import type { FormatRegistry } from '../../registry/formats.js';
 import { bodyToCurlPayload, formatRequestAsCurl, type CurlFormatOptions } from '../debug-utils.js';
@@ -326,12 +327,12 @@ export class LLMProvider implements LLMProviderLike {
     const res = await sendRequest(built.endpoint, built.body, false, options?.signal, this.loggingDir);
     const canonicalResponse = await processResponse(res, this.format);
 
-    return encodeResponseToFormat(canonicalResponse, {
+    return carryLlmObservation(canonicalResponse, encodeResponseToFormat(canonicalResponse, {
       format: built.outputFormat,
       sourceFormat: this.providerFormat,
       registry: options?.formatRegistry,
       signatureMode: this.resolveUnifiedSignatureMode(built.canonicalRequest, built.inputFormat, built.outputFormat),
-    }) as TOutput;
+    })) as TOutput;
   }
 
   async *chatStream<TOutput = LLMStreamChunk>(request: unknown, options?: LLMCallOptions): AsyncGenerator<TOutput> {
@@ -360,12 +361,12 @@ export class LLMProvider implements LLMProviderLike {
     const res = await sendRequest(built.endpoint, built.body, true, options?.signal, this.loggingDir);
 
     for await (const chunk of processStreamResponse(res, this.format)) {
-      yield encodeStreamChunkToFormat(chunk, {
+      yield carryLlmObservation(chunk, encodeStreamChunkToFormat(chunk, {
         format: built.outputFormat,
         sourceFormat: this.providerFormat,
         registry: options?.formatRegistry,
         signatureMode: this.resolveUnifiedSignatureMode(built.canonicalRequest, built.inputFormat, built.outputFormat),
-      }) as TOutput;
+      })) as TOutput;
     }
   }
 
@@ -430,4 +431,3 @@ export class LLMProvider implements LLMProviderLike {
     return this.providerName;
   }
 }
-

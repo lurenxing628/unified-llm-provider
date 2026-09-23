@@ -27,11 +27,37 @@ interface NormalizedOpenAIResponsesPromptCacheConfig {
   };
 }
 
+/** LimCode Astra：精确模型族（含 dated 快照），绝不外推到其他 gpt-* 模型。 */
+function isLimcodeAstraModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return normalized === 'gpt-6-astra' || /^gpt-6-astra-\d{4}-\d{2}-\d{2}$/.test(normalized);
+}
+
+/** LimCode Astra：把 SSE 事件的 output_index/item_id 归一为 chunk 级 output item 引用。 */
+function attachLimcodeOutputItem(chunk: LLMStreamChunk, data: any): void {
+  const ordinal = typeof data?.output_index === 'number' && Number.isSafeInteger(data.output_index) && data.output_index >= 0
+    ? data.output_index
+    : undefined;
+  if (ordinal === undefined) return;
+  const id = normalizeCallId(data?.item_id) ?? normalizeCallId(data?.item?.id) ?? normalizeCallId(data?.id) ?? `output:${ordinal}`;
+  const phase = data?.item?.phase === 'commentary' || data?.item?.phase === 'final_answer' ? data.item.phase : undefined;
+  chunk.outputItem = { id, ordinal, ...(phase ? { phase } : {}) };
+}
+
 export class OpenAIResponsesFormat implements CompactFormatAdapter {
   private readonly promptCache: NormalizedOpenAIResponsesPromptCacheConfig;
 
-  constructor(private model: string, promptCache?: LLMPromptCacheConfig) {
+  /**
+   * limcodeNativeEvents：仅 LimCode HTTP/SSE 原生路径开启。开启且模型为精确 Astra 时，
+   * 解码在 chunk 上附加 nativeEvent/completedContents（无 WS 物理身份）。LimCode 自带的
+   * WebSocket 会话直接构造本类且不开启此模式，WS 上的权威 nativeEvent 由会话自身产出。
+   */
+  constructor(private model: string, promptCache?: LLMPromptCacheConfig, private readonly limcodeNativeEvents = false) {
     this.promptCache = normalizeOpenAIResponsesPromptCacheConfig(promptCache);
+  }
+
+  private get limcodeAstraNative(): boolean {
+    return this.limcodeNativeEvents && isLimcodeAstraModel(this.model);
   }
 
   // ============ 编码请求：Gemini (Internal) → OpenAI Responses ============
@@ -98,6 +124,8 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
               call_id: callId,
               name: part.functionCall.name,
               arguments: JSON.stringify(part.functionCall.args),
+              // 接收/声明过的 async 标记随历史无损回编。
+              ...(part.functionCall.async === true ? { async: true } : {}),
             });
             pendingToolCallIds.push(callId);
             currentMessageItem = null;
@@ -171,6 +199,8 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         name: decl.name,
         description: decl.description,
         parameters: sanitizeSchemaForOpenAI(decl.parameters),
+        // LimCode Astra：per-tool 显式配置的异步声明原样透传（未经 LimCode capability 门禁不会设置）。
+        ...(decl.async === true ? { async: true } : {}),
       }));
     }
 
@@ -209,6 +239,16 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       mode: this.promptCache.mode === 'implicit' ? 'implicit' : 'explicit',
       ttl: this.promptCache.ttl,
     };
+    // Astra 显式缓存（GPT-5.6+ 语义）：顶层 instructions 不能携带断点；稳定开发者指令
+    // 转为 input_text 块放入 developer 消息并标记断点。其他模型保持原行为。
+    if (this.promptCache.mode === 'explicit' && isLimcodeAstraModel(this.model)
+      && typeof body.instructions === 'string' && body.instructions) {
+      inputItems.unshift({
+        role: 'developer',
+        content: [{ type: 'input_text', text: body.instructions, prompt_cache_breakpoint: createOpenAIPromptCacheBreakpoint() }],
+      });
+      delete body.instructions;
+    }
     if (this.promptCache.breakpoints.messages && !markLastOpenAIResponsesCacheableBlockAtRequestEnd(inputItems)) {
       inputItems.push(createOpenAICacheMarkerMessage(' '));
     }
@@ -304,7 +344,40 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         chunk.textDelta = data.delta;
         chunk.partsDelta = [{ text: data.delta }];
       }
+      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
+    } else if (event === 'response.created') {
+      // LimCode Astra HTTP/SSE：response 生命周期观察（无 WS 物理身份）。
+      if (this.limcodeAstraNative) {
+        const response = data.response ?? data;
+        const responseId = response?.id;
+        if (typeof responseId === 'string' && responseId) {
+          chunk.nativeEvent = {
+            type: 'response.created',
+            responseId,
+            ...(typeof response?.previous_response_id === 'string' && response.previous_response_id
+              ? { previousResponseId: response.previous_response_id }
+              : {}),
+          };
+        }
+      }
+    } else if (event === 'response.incomplete') {
+      if (this.limcodeAstraNative) {
+        const response = data.response ?? data;
+        const responseId = response?.id;
+        if (typeof responseId === 'string' && responseId) {
+          const usage = response?.usage ?? data.usage;
+          chunk.nativeEvent = {
+            type: 'response.incomplete',
+            responseId,
+            ...(typeof response?.status_details?.reason === 'string' && response.status_details.reason
+              ? { reason: response.status_details.reason }
+              : {}),
+            ...(usage ? { usage } : {}),
+          };
+        }
+      }
     } else if (event === 'response.output_item.added') {
+      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
       const item = data.item;
       if (item?.type === 'reasoning') {
         // Responses API 的 reasoning item 在 added 阶段通常只有空 summary；
@@ -312,29 +385,36 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         // encrypted_content 只在 output_item.done 阶段采信，避免保存未完成或最终全量重复签名。
         emitReasoningItemSummary(chunk, streamState, item, data);
       } else if (item?.type === 'function_call') {
-        rememberPendingFunctionCall(streamState, item);
+        rememberPendingFunctionCall(streamState, item, data);
       }
     } else if (isReasoningTextDeltaEvent(event)) {
+      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
       emitReasoningDeltaText(chunk, streamState, data, data.delta);
     } else if (isReasoningTextDoneEvent(event)) {
+      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
       emitReasoningFullText(chunk, streamState, data, data.text ?? data.content ?? data.summary_text);
     } else if (isReasoningSummaryPartEvent(event)) {
+      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
       emitReasoningFullText(chunk, streamState, data, extractReasoningSummaryPartText(data.part ?? data.summary_part ?? data.content_part ?? data));
     } else if (event === 'response.function_call_arguments.delta') {
+      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
       appendPendingFunctionCallArguments(
         streamState,
         data.item_id ?? data.id ?? data.call_id,
         data.delta,
+        data,
       );
     } else if (event === 'response.function_call_arguments.done') {
+      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
       const itemKey = rememberPendingFunctionCall(streamState, {
         id: data.item_id ?? data.id,
         call_id: data.call_id,
         name: data.name,
         arguments: data.arguments,
-      });
-      if (itemKey) emitFunctionCallChunk(chunk, itemKey, streamState);
+      }, data);
+      if (itemKey) emitFunctionCallChunk(chunk, itemKey, streamState, data);
     } else if (event === 'response.output_item.done') {
+      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
       const item = data.item;
       if (item?.type === 'reasoning') {
         // 如果前面没有 reasoning_summary_text.delta，done 里的完整 summary 是最后兜底，
@@ -342,14 +422,49 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         emitReasoningItemSummary(chunk, streamState, item, data);
         emitReasoningSignature(chunk, streamState, item, data);
       } else if (item?.type === 'function_call') {
-        rememberPendingFunctionCall(streamState, item);
-        emitFunctionCallChunk(chunk, item, streamState);
+        rememberPendingFunctionCall(streamState, item, data);
+        emitFunctionCallChunk(chunk, item, streamState, data);
       } else if (item?.type === 'compaction') {
         appendPartDelta(chunk, createProviderContextPart(item, 'responses'));
       }
     } else if (event === 'response.completed') {
       const usage = data.usage ?? data.response?.usage;
       if (usage) chunk.usageMetadata = mapOpenAIResponsesUsage(usage);
+      if (this.limcodeAstraNative) {
+        const response = data.response ?? data;
+        const responseId = response?.id;
+        if (typeof responseId === 'string' && responseId) {
+          chunk.nativeEvent = {
+            type: 'response.completed',
+            responseId,
+            ...(usage ? { usage } : {}),
+          };
+        }
+        const output = response?.output ?? data.output;
+        if (Array.isArray(output)) {
+          try {
+            const decodedContents = decodeOpenAIResponsesItemsToContents(output, 'responses');
+            // 与解码器同一跳过规则对齐索引：每个 object item 恰好产出一个 content，
+            // 给 part 补上真实 output item 引用，保证 HTTP 链上的 response 边界无损。
+            let contentIndex = 0;
+            for (let index = 0; index < output.length && contentIndex < decodedContents.length; index += 1) {
+              const rawItem = output[index];
+              if (!rawItem || typeof rawItem !== 'object') continue;
+              const content = decodedContents[contentIndex];
+              contentIndex += 1;
+              if (!content) continue;
+              const itemId = normalizeCallId(rawItem.id) ?? `output:${index}`;
+              const phase = rawItem.phase === 'commentary' || rawItem.phase === 'final_answer' ? rawItem.phase : undefined;
+              for (const part of content.parts ?? []) {
+                part.outputItem = { id: itemId, ordinal: index, ...(phase ? { phase } : {}) };
+              }
+            }
+            chunk.completedContents = decodedContents;
+          } catch {
+            // 终态内容附加失败不破坏既有流式语义；deltas 仍是内容来源。
+          }
+        }
+      }
       for (const item of data.response?.output ?? data.output ?? []) {
         if (item?.type === 'reasoning') {
           // 部分网关不会发送 reasoning_* delta，只在 completed.response.output
@@ -364,7 +479,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
           appendPartDelta(chunk, createProviderContextPart(item, 'responses'));
         }
       }
-      flushPendingFunctionCalls(chunk, streamState);
+      flushPendingFunctionCalls(chunk, streamState, data);
     }
 
     return chunk;
@@ -391,6 +506,7 @@ interface PendingOpenAIResponsesFunctionCall {
   callId?: string;
   name?: string;
   argumentsText: string;
+  async?: boolean;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -801,6 +917,8 @@ function createFunctionCallPart(item: any): FunctionCallPart {
       name: item.name,
       args: parseFunctionCallArguments(item.arguments),
       callId: normalizeCallId(item.call_id) ?? normalizeCallId(item.id),
+      // 线上 function_call item 的 async:true 是接收事实，解码必须无损保留。
+      ...(item.async === true ? { async: true } : {}),
     },
   };
 }
@@ -819,13 +937,16 @@ function parseFunctionCallArguments(argumentsValue: unknown): Record<string, unk
 function rememberPendingFunctionCall(
   state: OpenAIResponsesStreamState,
   item: any,
+  raw?: object,
 ): string | undefined {
   const itemKey = getPendingFunctionCallKey(item);
   if (!itemKey) return undefined;
 
   const pending = state.pendingFunctionCalls.get(itemKey) ?? { argumentsText: '' };
+  const before = pending.argumentsText;
   const callId = normalizeCallId(item.call_id) ?? pending.callId ?? normalizeCallId(item.id);
   if (callId) pending.callId = callId;
+  if (item.async === true) pending.async = true;
   if (typeof item.name === 'string' && item.name.trim()) pending.name = item.name;
   if (typeof item.arguments === 'string') {
     if (item.arguments || !pending.argumentsText) {
@@ -836,6 +957,7 @@ function rememberPendingFunctionCall(
   }
 
   state.pendingFunctionCalls.set(itemKey, pending);
+  observeFunctionAssembly(raw, pending, itemKey, before, pending.argumentsText, 'replace', 'item_key');
   return itemKey;
 }
 
@@ -843,13 +965,16 @@ function appendPendingFunctionCallArguments(
   state: OpenAIResponsesStreamState,
   itemId: unknown,
   delta: unknown,
+  raw?: object,
 ): void {
   const itemKey = normalizeCallId(itemId);
   if (!itemKey || typeof delta !== 'string') return;
 
   const pending = state.pendingFunctionCalls.get(itemKey) ?? { argumentsText: '' };
+  const before = pending.argumentsText;
   pending.argumentsText += delta;
   state.pendingFunctionCalls.set(itemKey, pending);
+  observeFunctionAssembly(raw, pending, itemKey, before, delta, 'append', 'item_key');
 }
 
 function getPendingFunctionCallKey(item: any): string | undefined {
@@ -860,36 +985,53 @@ function emitFunctionCallChunk(
   chunk: LLMStreamChunk,
   itemOrKey: any,
   state: OpenAIResponsesStreamState,
+  raw?: object,
 ): void {
   const itemKey = typeof itemOrKey === 'string'
     ? itemOrKey
-    : rememberPendingFunctionCall(state, itemOrKey);
+    : rememberPendingFunctionCall(state, itemOrKey, raw);
   if (!itemKey) return;
 
   const pending = state.pendingFunctionCalls.get(itemKey);
-  if (!pending?.name) return;
+  if (!pending?.name) {
+    if (pending) observeFunctionAssembly(raw, pending, itemKey, pending.argumentsText, '', 'rejected', 'missing_name');
+    return;
+  }
 
   const functionCall = tryCreateFunctionCallPart({
     id: itemKey,
     call_id: pending.callId ?? itemKey,
     name: pending.name,
     arguments: pending.argumentsText,
+    ...(pending.async === true ? { async: true } : {}),
   });
-  if (!functionCall) return;
+  if (!functionCall) { observeFunctionAssembly(raw, pending, itemKey, pending.argumentsText, '', 'rejected', 'invalid_arguments'); return; }
 
   const emittedId = functionCall.functionCall.callId ?? itemKey;
-  if (state.emittedFunctionCallIds.has(emittedId)) return;
+  if (state.emittedFunctionCallIds.has(emittedId)) { observeFunctionAssembly(raw, pending, itemKey, pending.argumentsText, '', 'rejected', 'already_emitted'); return; }
   state.emittedFunctionCallIds.add(emittedId);
   state.pendingFunctionCalls.delete(itemKey);
 
   chunk.functionCalls = [...(chunk.functionCalls ?? []), functionCall];
   chunk.partsDelta = [...(chunk.partsDelta ?? []), functionCall];
+  observeFunctionAssembly(raw, pending, itemKey, pending.argumentsText, '', 'complete', 'parsed');
 }
 
-function flushPendingFunctionCalls(chunk: LLMStreamChunk, state: OpenAIResponsesStreamState): void {
+function flushPendingFunctionCalls(chunk: LLMStreamChunk, state: OpenAIResponsesStreamState, raw?: object): void {
   for (const itemKey of [...state.pendingFunctionCalls.keys()]) {
-    emitFunctionCallChunk(chunk, itemKey, state);
+    emitFunctionCallChunk(chunk, itemKey, state, raw);
   }
+}
+
+const functionObservationRuns = new WeakMap<object, string>();
+function observeFunctionAssembly(raw: object | undefined, pending: PendingOpenAIResponsesFunctionCall, itemKey: string, before: string, fragment: string, operation: string, reason: string): void {
+  observeLlmDerived(raw, token => {
+    const first = functionObservationRuns.get(pending) !== token;
+    functionObservationRuns.set(pending, token);
+    return { kind: 'tool_assembly', value: { callId: pending.callId ?? itemKey, streamIndex: itemKey,
+      beforeChars: before.length, afterChars: pending.argumentsText.length, fragment, operation, selectionReason: reason,
+      ...(first ? { baseline: before } : {}) } };
+  });
 }
 
 function tryCreateFunctionCallPart(item: any): FunctionCallPart | undefined {
@@ -899,3 +1041,4 @@ function tryCreateFunctionCallPart(item: any): FunctionCallPart | undefined {
     return undefined;
   }
 }
+import { observeLlmDerived } from '../observation.js';

@@ -12,6 +12,7 @@ export * from './llm/vision.js';
 export * from './llm/transport.js';
 export { resetOpenAIResponsesWebSocketSessions } from './llm/websocket-openai-responses.js';
 export * from './llm/response.js';
+export * from './llm/observation.js';
 export * from './llm/convert.js';
 export * from './llm/debug-utils.js';
 

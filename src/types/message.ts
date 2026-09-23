@@ -7,8 +7,17 @@
 
 import type { ToolDiffPreviewResponseLike } from '../plugin/tool-preview.js';
 
+/** LimCode Astra 扩展：part 归属的 provider output item 稳定引用。 */
+export interface LimcodeOutputItemReference {
+  id: string;
+  ordinal: number;
+  phase?: 'commentary' | 'final_answer';
+}
+
 /** 文本部分 */
 export interface TextPart {
+  /** LimCode Astra 扩展：所属 output item 引用（仅原生解码路径附加）。 */
+  outputItem?: LimcodeOutputItemReference;
   text?: string;
   /** Gemini thinking 文本块 */
   thought?: boolean;
@@ -51,11 +60,15 @@ export interface ProviderContextItem {
 
 /** Provider 原生上下文状态 part（如 OpenAI Responses compaction item） */
 export interface ProviderContextPart {
+  /** LimCode Astra 扩展：所属 output item 引用（仅原生解码路径附加）。 */
+  outputItem?: LimcodeOutputItemReference;
   providerContext: ProviderContextItem;
 }
 
 /** 内联数据部分（图片等二进制数据，base64 编码） */
 export interface InlineDataPart {
+  /** LimCode Astra 扩展：所属 output item 引用（仅原生解码路径附加）。 */
+  outputItem?: LimcodeOutputItemReference;
   inlineData: {
     mimeType: string;
     data: string;
@@ -66,16 +79,22 @@ export interface InlineDataPart {
 
 /** 函数调用部分（由模型发出） */
 export interface FunctionCallPart {
+  /** LimCode Astra 扩展：所属 output item 引用（仅原生解码路径附加）。 */
+  outputItem?: LimcodeOutputItemReference;
   functionCall: {
     name: string;
     args: Record<string, unknown>;
     /** provider 原生工具调用 ID（OpenAI tool_call.id / Responses call_id / Claude tool_use.id） */
     callId?: string;
+    /** LimCode Astra 扩展：线上 function_call item 携带的 async:true 标记，解码与回编均无损保留。 */
+    async?: boolean;
   };
 }
 
 /** 函数响应部分（工具执行结果，回传给模型） */
 export interface FunctionResponsePart {
+  /** LimCode Astra 扩展：所属 output item 引用（仅原生解码路径附加）。 */
+  outputItem?: LimcodeOutputItemReference;
   functionResponse: {
     name: string;
     response: Record<string, unknown>;

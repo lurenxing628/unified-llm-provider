@@ -21,7 +21,8 @@ export function createOpenAIResponsesProvider(config: LLMConfig): LLMProvider {
   const webSocketOptions = config.webSocketOptions ?? config.endpoint?.webSocketOptions;
 
   return new LLMProvider(
-    new OpenAIResponsesFormat(model, config.promptCache),
+    // LimCode Astra：HTTP/SSE 原生解码事件（codec 内部按精确模型族门禁；WS 由 LimCode 会话自产事件）。
+    new OpenAIResponsesFormat(model, config.promptCache, true),
     {
       url,
       streamUrl: config.endpoint?.streamUrl,
