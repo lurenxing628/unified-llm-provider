@@ -141,6 +141,7 @@ describe('requestBody.tools normalization', () => {
           properties: { path: { type: 'string' } },
           required: ['path'],
         },
+        strict: false,
       },
       { type: 'web_search' },
     ]);
@@ -166,6 +167,7 @@ describe('requestBody.tools normalization', () => {
       name: 'read_file',
       description: 'Read a file',
       parameters: { type: 'object', properties: {} },
+      strict: false,
     }]);
   });
 

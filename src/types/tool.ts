@@ -17,6 +17,11 @@ export interface FunctionDeclaration {
   };
   /** LimCode Astra 扩展：显式配置的原生异步工具声明，编码为 Responses function tool 的 async:true。 */
   async?: boolean;
+  /**
+   * OpenAI Responses function tool 的 strict。显式给出时原样发送；省略时 Responses 格式补 strict:false，
+   * 避免服务端把 schema 规范化成严格模式（所有可选参数变必填）。其他格式忽略该字段。
+   */
+  strict?: boolean;
 }
 
 /** 工具调用状态 */

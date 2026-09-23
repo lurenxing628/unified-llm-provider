@@ -199,6 +199,13 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         name: decl.name,
         description: decl.description,
         parameters: sanitizeSchemaForOpenAI(decl.parameters),
+        // B4：Responses 省略 strict 时会尝试把 schema 规范化成严格模式（可选参数被改成必填，实测
+        // 可选的 limit 被模型填成 0）。声明里显式给了 strict 的保持原值，否则显式发送 strict:false
+        // 保持非严格、尽力而为的函数调用。依据：
+        // https://developers.openai.com/api/docs/guides/function-calling#strict-mode
+        // “To opt out of strict mode in Responses and keep non-strict, best-effort function calling,
+        // explicitly set strict: false.”
+        strict: typeof decl.strict === 'boolean' ? decl.strict : false,
         // LimCode Astra：per-tool 显式配置的异步声明原样透传（未经 LimCode capability 门禁不会设置）。
         ...(decl.async === true ? { async: true } : {}),
       }));
