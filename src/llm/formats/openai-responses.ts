@@ -374,6 +374,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       } else if (item.type === 'function_call') {
         parts.push(createFunctionCallPart(item));
       } else if (item.type === 'compaction') {
+        // B8：服务端 compaction item 按原位置保存为 providerContext part（见 emitServerCompactionPart）。
         parts.push(createProviderContextPart(item, 'responses'));
       }
     }
@@ -483,7 +484,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         rememberPendingFunctionCall(streamState, item, data);
         emitFunctionCallChunk(chunk, item, streamState, data);
       } else if (item?.type === 'compaction') {
-        appendPartDelta(chunk, createProviderContextPart(item, 'responses'));
+        emitServerCompactionPart(chunk, streamState, item);
       }
     } else if (event === 'response.completed') {
       const usage = data.usage ?? data.response?.usage;
@@ -534,7 +535,9 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
           // 会在历史里形成额外的 signature-only thought part。保持原逻辑：
           // 只在 output_item.done 阶段接收 reasoning.encrypted_content。
         } else if (item?.type === 'compaction') {
-          appendPartDelta(chunk, createProviderContextPart(item, 'responses'));
+          // 兜底：只在 output_item.done 没有发过这个 compaction item 时补发（部分网关只在
+          // completed.response.output 里给出），避免同一个 compaction item 在历史里出现两次。
+          emitServerCompactionPart(chunk, streamState, item);
         }
       }
       flushPendingFunctionCalls(chunk, streamState, data);
@@ -550,6 +553,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       reasoningTextByKey: new Map<string, string>(),
       emittedReasoningSignatures: new Set<string>(),
       assistantMessagePhases: new Map<string, LimcodeOutputItemReference>(),
+      emittedCompactionKeys: new Set<string>(),
     } as OpenAIResponsesStreamState;
   }
 }
@@ -561,6 +565,28 @@ interface OpenAIResponsesStreamState extends StreamDecodeState {
   emittedReasoningSignatures: Set<string>;
   /** B6：带 phase 的 assistant message，按 item id 与 `output:<output_index>` 两个键登记。 */
   assistantMessagePhases: Map<string, LimcodeOutputItemReference>;
+  /** B8：本次流里已经作为 providerContext part 发出的服务端 compaction item。 */
+  emittedCompactionKeys: Set<string>;
+}
+
+/**
+ * B8：普通 /responses 响应里的服务端 compaction 输出项（请求设置 context_management 时出现）
+ * 解码为 providerContext part，与 /responses/compact 输出同一表示（createProviderContextPart），
+ * 回编时原样放回 input，下一次请求不必重发全部历史、服务端也不必每次重新压缩。
+ * 依据：https://developers.openai.com/api/docs/guides/compaction
+ * （“For stateless input-array chaining, append output items as usual.”）。
+ *
+ * 流里同一个 compaction item 会出现在 output_item.done 和 response.completed.response.output 两处，
+ * 按 id（没有 id 时按 encrypted_content）去重，只发一次，并尽量保留 output_item.done 处的原始位置。
+ */
+function emitServerCompactionPart(chunk: LLMStreamChunk, state: OpenAIResponsesStreamState, item: any): void {
+  const key = normalizeCallId(item?.id)
+    ?? (typeof item?.encrypted_content === 'string' && item.encrypted_content ? `enc:${item.encrypted_content}` : undefined);
+  if (key) {
+    if (state.emittedCompactionKeys.has(key)) return;
+    state.emittedCompactionKeys.add(key);
+  }
+  appendPartDelta(chunk, createProviderContextPart(item, 'responses'));
 }
 
 /** B6：output_item.added / done 里带 phase 的 assistant message 登记下来，供后续 output_text.delta 使用。 */

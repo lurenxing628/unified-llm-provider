@@ -1468,3 +1468,106 @@ describe('B6 非 Astra 模型的 assistant message phase 保留在 outputItem �
     expect(done).toEqual({});
   });
 });
+
+describe('B8 普通响应里的服务端 compaction 输出项解码为 providerContext part 并可原样回放', () => {
+  // 依据：https://developers.openai.com/api/docs/guides/compaction
+  // “For stateless input-array chaining, append output items as usual.”（服务端 compaction 在
+  // 请求设置 context_management 时出现在普通 /responses 输出里）
+  const COMPACTION = { type: 'compaction', id: 'cmp_srv_1', encrypted_content: 'gAAAAB_SERVER_COMPACTION' };
+  const OUTPUT_WITH_COMPACTION = [COMPACTION, reasoning('rs_2', 'answer'), msg('2', 'Answer one.')];
+  const EXPECTED_PART = {
+    providerContext: {
+      provider: 'openai',
+      format: 'openai-responses',
+      endpoint: 'responses',
+      itemType: 'compaction',
+      id: 'cmp_srv_1',
+      encryptedContent: 'gAAAAB_SERVER_COMPACTION',
+      rawItem: COMPACTION,
+    },
+  };
+
+  function collectParts(chunks: any[]): any[] {
+    return chunks.flatMap(chunk => chunk.partsDelta ?? []).filter(part => 'providerContext' in part);
+  }
+
+  it('流式：同一个 compaction item 只发一次（output_item.done），response.completed 不再重复', () => {
+    const chunks = decodeAll(new OpenAIResponsesFormat('gpt-5.5', undefined, true), sseEvents('resp_1', OUTPUT_WITH_COMPACTION));
+    expect(collectParts(chunks)).toEqual([EXPECTED_PART]);
+    const doneIndex = chunks.findIndex(chunk => chunk.partsDelta?.some((part: any) => 'providerContext' in part));
+    const firstThoughtIndex = chunks.findIndex(chunk => chunk.partsDelta?.some((part: any) => part.thought));
+    expect(doneIndex).toBeGreaterThanOrEqual(0);
+    expect(doneIndex).toBeLessThan(firstThoughtIndex);
+  });
+
+  it('流式：只在 response.completed 里出现的 compaction item 仍会兜底发出一次', () => {
+    const format = new OpenAIResponsesFormat('gpt-5.5');
+    const state = format.createStreamState();
+    const completed = format.decodeStreamChunk({
+      type: 'response.completed',
+      response: { id: 'resp_1', output: [COMPACTION, COMPACTION], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+    }, state);
+    expect(collectParts([completed])).toEqual([EXPECTED_PART]);
+  });
+
+  it('流式：没有 id 的 compaction item 按 encrypted_content 去重', () => {
+    const noId = { type: 'compaction', encrypted_content: 'gAAAAB_NOID' };
+    const format = new OpenAIResponsesFormat('gpt-5.5');
+    const state = format.createStreamState();
+    const done = format.decodeStreamChunk({ type: 'response.output_item.done', output_index: 0, item: noId }, state);
+    const completed = format.decodeStreamChunk({ type: 'response.completed', response: { id: 'r', output: [noId] } }, state);
+    expect(collectParts([done, completed])).toHaveLength(1);
+  });
+
+  it('非流式：compaction 按原位置解码为 providerContext part', () => {
+    const decoded = new OpenAIResponsesFormat('gpt-5.5').decodeResponse(structuredClone({ id: 'resp_1', output: OUTPUT_WITH_COMPACTION }));
+    expect(decoded.content.parts).toEqual([
+      EXPECTED_PART,
+      { text: 'answer', thought: true, thoughtSignatures: { 'openai-responses': 'gAAAAB_ENC_rs_2' } },
+      { text: 'Answer one.' },
+    ]);
+  });
+
+  it('与 /responses/compact 输出的 providerContext part 是同一表示（仅 endpoint 不同）', () => {
+    const format = new OpenAIResponsesFormat('gpt-5.5');
+    const compact = format.decodeCompactResponse({ id: 'resp_cmp', object: 'response.compaction', output: [COMPACTION] });
+    const compactPart = compact.contents[0].parts[0] as any;
+    expect(compactPart).toEqual({
+      providerContext: { ...EXPECTED_PART.providerContext, endpoint: 'responses.compact' },
+    });
+  });
+
+  it('回放：非流式解码的内容回编后 compaction item 原样出现在 input 中且只出现一次', () => {
+    const format = new OpenAIResponsesFormat('gpt-5.5');
+    const decoded = format.decodeResponse(structuredClone({ id: 'resp_1', output: OUTPUT_WITH_COMPACTION }));
+    const body = format.encodeRequest({
+      contents: [
+        { role: 'user', parts: [{ text: 'first question' }] },
+        decoded.content,
+        { role: 'user', parts: [{ text: 'second question' }] },
+      ],
+    }) as any;
+    expect(body.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'first question' }] },
+      COMPACTION,
+      { type: 'reasoning', summary: [{ type: 'summary_text', text: 'answer' }], encrypted_content: 'gAAAAB_ENC_rs_2' },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Answer one.' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'second question' }] },
+    ]);
+  });
+
+  it('回放：流式 partsDelta 累积成的内容回编后 compaction item 只出现一次', () => {
+    const chunks = decodeAll(new OpenAIResponsesFormat('gpt-5.5', undefined, true), sseEvents('resp_1', OUTPUT_WITH_COMPACTION));
+    const parts = chunks.flatMap(chunk => chunk.partsDelta ?? [])
+      .filter(part => 'providerContext' in part || part.thoughtSignatures || part.text);
+    const body = new OpenAIResponsesFormat('gpt-5.5').encodeRequest({
+      contents: [
+        { role: 'user', parts: [{ text: 'first question' }] },
+        { role: 'model', parts },
+        { role: 'user', parts: [{ text: 'second question' }] },
+      ],
+    }) as any;
+    expect(body.input.filter((item: any) => item.type === 'compaction')).toEqual([COMPACTION]);
+    expect(body.input[1]).toEqual(COMPACTION);
+  });
+});
