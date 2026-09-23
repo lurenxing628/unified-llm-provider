@@ -29,9 +29,12 @@
  *     - 嵌套深度有限制（未文档化）
  *     - schema 复杂度有隐式上限（"too many states"）
  *
- *   OpenAI (non-strict):
- *     - 宽松模式下基本接受完整 JSON Schema
- *     - enum 数字值不会报错但模型可能理解不准，统一转字符串更稳定
+ *   OpenAI:
+ *     - 函数参数就是 JSON Schema；Structured Outputs 文档列出的支持类型包含 Integer / Number / Enum，
+ *       并支持 definitions（`$defs` + `$ref`）与递归 schema
+ *       （https://developers.openai.com/api/docs/guides/structured-outputs “Supported schemas”）。
+ *       因此数字 enum 原样保留（以前把 `{type:'integer', enum:[1,2]}` 改成字符串 enum，类型与取值自相矛盾）。
+ *     - 本地 `$ref` 先展开再清洗；以前直接删除 `$defs` 却保留 `$ref`，留下悬空引用。
  *
  *   Claude:
  *     - 不支持顶层 oneOf/allOf/anyOf（嵌套内可以）
@@ -151,47 +154,186 @@ export function sanitizeSchemaForGemini(schema: unknown): unknown {
   return result;
 }
 
+// ===================== 本地 $ref 展开 =====================
+
+/** 这些关键字的值是实例数据而不是 schema，里面的 `$ref` 字样不是引用。 */
+const SCHEMA_DATA_KEYWORDS = new Set(['enum', 'const', 'default', 'examples', 'example']);
+
+/** 这些关键字的值是 { 名称: 子schema } 映射表，名称可能与 schema 关键字同名。 */
+const SCHEMA_MAP_KEYWORDS = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas']);
+
+/** 防止病态 schema（大量交叉引用）展开后体积爆炸；超过后保留引用和定义，不再展开。 */
+const MAX_REF_EXPANSIONS = 1000;
+
+function decodeJsonPointerSegment(segment: string): string {
+  let decoded = segment;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    // 不是合法的百分号编码时按原文处理
+  }
+  return decoded.replace(/~1/g, '/').replace(/~0/g, '~');
+}
+
+function escapeJsonPointerSegment(segment: string): string {
+  return segment.replace(/~/g, '~0').replace(/\//g, '~1');
+}
+
+/** 解析文档内引用：`#` 或 `#/a/b`（JSON Pointer，RFC 6901）。 */
+function resolveLocalRef(root: unknown, ref: string): { found: true; value: unknown } | { found: false } {
+  if (ref === '#') return { found: true, value: root };
+  if (!ref.startsWith('#/')) return { found: false };
+  let current: unknown = root;
+  for (const rawSegment of ref.slice(2).split('/')) {
+    const segment = decodeJsonPointerSegment(rawSegment);
+    if (Array.isArray(current) && /^\d+$/.test(segment) && Number(segment) < current.length) {
+      current = current[Number(segment)];
+    } else if (isPlainObject(current) && Object.prototype.hasOwnProperty.call(current, segment)) {
+      current = current[segment];
+    } else {
+      return { found: false };
+    }
+  }
+  return { found: true, value: current };
+}
+
+/** 引用的规范形式（段先解码再按 RFC 6901 转义），用来和节点位置比较。 */
+function canonicalLocalRef(ref: string): string {
+  if (ref === '#') return '#';
+  return `#/${ref.slice(2).split('/').map(segment => escapeJsonPointerSegment(decodeJsonPointerSegment(segment))).join('/')}`;
+}
+
+function isSameOrAncestorPointer(ref: string, location: string): boolean {
+  return ref === '#' || location === ref || location.startsWith(`${ref}/`);
+}
+
+export interface DereferencedSchema {
+  schema: unknown;
+  /**
+   * 有引用因递归、目标不是对象或展开次数超限而保留，且它指向 `$defs` / `definitions` 内部。
+   * 此时这些定义必须随 schema 一起保留，否则会变成悬空引用。
+   */
+  requiresDefinitions: boolean;
+}
+
+/**
+ * 展开 schema 内的本地 `$ref`（`#`、`#/$defs/...`、`#/definitions/...` 等 JSON Pointer）。
+ *
+ * - 非递归引用：用目标 schema 替换引用节点；引用节点上的其他关键字（如 description）覆盖目标同名字段。
+ * - 递归引用（目标是当前节点自身或祖先，或已在当前展开链上）：保留 `$ref`；指向定义表内部时
+ *   通过 requiresDefinitions 告知调用方保留定义。根递归 `$ref: "#"` 因此原样保留。
+ * - 找不到目标或非本地引用：原样保留，不做猜测。
+ * - 没有任何本地 `$ref` 时返回原对象本身，清洗结果与以前完全一致。
+ */
+export function dereferenceLocalSchemaRefs(schema: unknown): DereferencedSchema {
+  if (!isPlainObject(schema)) return { schema, requiresDefinitions: false };
+  const root = schema;
+  let sawRef = false;
+  let requiresDefinitions = false;
+  let expansions = 0;
+
+  const child = (location: string, key: string | number) => `${location}/${escapeJsonPointerSegment(String(key))}`;
+
+  const expandMap = (value: unknown, stack: readonly string[], location: string): unknown => {
+    if (!isPlainObject(value)) return expand(value, stack, location);
+    const result: Record<string, unknown> = {};
+    for (const [name, childSchema] of Object.entries(value)) result[name] = expand(childSchema, stack, child(location, name));
+    return result;
+  };
+
+  const expandObject = (node: Record<string, unknown>, stack: readonly string[], location: string): Record<string, unknown> => {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node)) {
+      if (SCHEMA_DATA_KEYWORDS.has(key)) {
+        result[key] = value;
+      } else if (SCHEMA_MAP_KEYWORDS.has(key)) {
+        // 定义表本身不展开：它们只在 requiresDefinitions 时随 schema 保留，保留时引用目标仍然有效。
+        result[key] = key === '$defs' || key === 'definitions' ? value : expandMap(value, stack, child(location, key));
+      } else {
+        result[key] = expand(value, stack, child(location, key));
+      }
+    }
+    return result;
+  };
+
+  const expand = (node: unknown, stack: readonly string[], location: string): unknown => {
+    if (Array.isArray(node)) return node.map((item, index) => expand(item, stack, child(location, index)));
+    if (!isPlainObject(node)) return node;
+    const ref = node.$ref;
+    if (typeof ref !== 'string' || !ref.startsWith('#')) return expandObject(node, stack, location);
+
+    sawRef = true;
+    const { $ref: _ref, ...siblings } = node;
+    const target = resolveLocalRef(root, ref);
+    if (!target.found) return expandObject(node, stack, location);
+    const canonical = canonicalLocalRef(ref);
+    const recursive = stack.includes(canonical) || isSameOrAncestorPointer(canonical, location);
+    if (recursive || !isPlainObject(target.value) || expansions >= MAX_REF_EXPANSIONS) {
+      if (/\/(?:\$defs|definitions)(?:\/|$)/.test(canonical)) requiresDefinitions = true;
+      return expandObject(node, stack, location);
+    }
+    expansions += 1;
+    const expandedTarget = expand(target.value, [...stack, canonical], canonical) as Record<string, unknown>;
+    return { ...expandedTarget, ...expandObject(siblings, stack, location) };
+  };
+
+  const expanded = expand(root, [], '#');
+  return sawRef ? { schema: expanded, requiresDefinitions } : { schema, requiresDefinitions: false };
+}
+
 // ===================== OpenAI =====================
 
 /** OpenAI 需要删除的 schema 关键字（仅 schema 节点层级） */
 const OPENAI_DROPPED_KEYWORDS = ['$defs', 'definitions', '$schema'];
 
 /**
- * 为 OpenAI (non-strict) 降级 schema。轻量处理：
- *   1. enum 数字值 → 字符串（提高模型理解准确度）
- *   2. 删除 $defs/definitions（已由 dereference 层处理）
- *   3. 其余保留
+ * 为 OpenAI 降级 schema：
+ *   1. 先展开本地 `$ref`（防循环）；
+ *   2. 删除 `$defs` / `definitions`（已展开）与 `$schema`；仍有递归引用时保留定义，保证引用可解析；
+ *   3. enum 原样保留（OpenAI 支持非字符串 enum），其余关键字保留。
  */
 export function sanitizeSchemaForOpenAI(schema: unknown): unknown {
+  const dereferenced = dereferenceLocalSchemaRefs(schema);
+  return sanitizeOpenAISchemaNode(dereferenced.schema, dereferenced.requiresDefinitions);
+}
+
+function sanitizeOpenAISchemaNode(schema: unknown, keepDefinitions: boolean): unknown {
   if (schema === null || schema === undefined || typeof schema !== 'object') {
     return schema;
   }
 
   if (Array.isArray(schema)) {
-    return schema.map(sanitizeSchemaForOpenAI);
+    return schema.map(item => sanitizeOpenAISchemaNode(item, keepDefinitions));
   }
 
   const obj = schema as Record<string, unknown>;
   const result: Record<string, unknown> = {};
+  const sanitizeChild = (child: unknown) => sanitizeOpenAISchemaNode(child, keepDefinitions);
 
   for (const [key, value] of Object.entries(obj)) {
+    // 仍有保留的 $ref 时，定义表必须留下，否则引用悬空
+    if (keepDefinitions && (key === '$defs' || key === 'definitions')) {
+      result[key] = sanitizePropertyMap(value, sanitizeChild);
+      continue;
+    }
+
     // 删除已展开的残留（schema 关键字层级；properties 里的同名属性不受影响）
     // $schema: MCP 工具常携带，对 LLM API 无意义
     if (OPENAI_DROPPED_KEYWORDS.includes(key)) continue;
 
     // properties / patternProperties：key 是属性名，原样保留
     if (key === 'properties' || key === 'patternProperties') {
-      result[key] = sanitizePropertyMap(value, sanitizeSchemaForOpenAI);
+      result[key] = sanitizePropertyMap(value, sanitizeChild);
       continue;
     }
 
-    // enum: 统一转字符串
-    if (key === 'enum' && Array.isArray(value)) {
-      result[key] = value.map(v => String(v));
+    // enum / const / default 等是实例数据，原样保留（不再把数字 enum 转成字符串）
+    if (SCHEMA_DATA_KEYWORDS.has(key)) {
+      result[key] = value;
       continue;
     }
 
-    result[key] = sanitizeSchemaForOpenAI(value);
+    result[key] = sanitizeChild(value);
   }
 
   return result;

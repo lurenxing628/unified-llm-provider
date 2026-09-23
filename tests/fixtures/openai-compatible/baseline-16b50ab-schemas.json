@@ -1,0 +1,1011 @@
+{
+  "builtin:submit_agent_answer": {
+    "type": "object",
+    "properties": {
+      "answerBridgeId": {
+        "type": "string",
+        "description": "Optional. Target answerBridgeId. Defaults to the answerBridgeId of the current run_agent task when omitted."
+      },
+      "title": {
+        "type": "string",
+        "description": "Title of the submitted content. Lets the parent agent quickly grasp the topic of this answer."
+      },
+      "content": {
+        "type": "string",
+        "description": "The full content submitted to the parent agent."
+      }
+    },
+    "required": [
+      "title",
+      "content"
+    ]
+  },
+  "builtin:read_agent_answer": {
+    "type": "object",
+    "properties": {
+      "answerBridgeId": {
+        "type": "string",
+        "description": "A child reference within the current conversation parent lineage."
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "direct",
+          "tree"
+        ],
+        "description": "Defaults to direct children. tree permits verified descendants."
+      }
+    },
+    "required": [
+      "answerBridgeId"
+    ]
+  },
+  "builtin:agent_board": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": [
+          "create_channel",
+          "list_channels",
+          "list_threads",
+          "read_thread",
+          "read_post",
+          "search",
+          "subscribe",
+          "unsubscribe",
+          "post"
+        ]
+      },
+      "name": {
+        "type": "string",
+        "description": "Channel name for create_channel."
+      },
+      "channelRef": {
+        "type": "string",
+        "description": "Existing channel reference (H#)."
+      },
+      "threadRef": {
+        "type": "string",
+        "description": "Discussion root reference (T#)."
+      },
+      "postRef": {
+        "type": "string",
+        "description": "Existing post reference (B#)."
+      },
+      "text": {
+        "type": "string",
+        "description": "Post body, maximum 100000 Unicode characters."
+      },
+      "query": {
+        "type": "string",
+        "description": "Case-insensitive substring for list_channels/search, maximum 256 characters."
+      },
+      "subscribe": {
+        "type": "boolean",
+        "description": "For create_channel only; default true."
+      },
+      "notifyConversationRefs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 256,
+        "description": "Optional same-tree C# references for a running-turn notice."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "Requested page size; output budget may reduce it. Default 20."
+      },
+      "cursor": {
+        "type": "string",
+        "description": "Opaque nextCursor from the same query."
+      },
+      "offsetChars": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "read_post Unicode-character offset; default 0."
+      },
+      "limitChars": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20000,
+        "description": "read_post maximum characters; default 12000."
+      }
+    },
+    "required": [
+      "operation"
+    ],
+    "additionalProperties": false
+  },
+  "builtin:list_agents": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+  },
+  "builtin:send_agent_message": {
+    "type": "object",
+    "properties": {
+      "conversationRef": {
+        "type": "string",
+        "description": "Conversation reference C# returned by list_agents."
+      },
+      "text": {
+        "type": "string",
+        "description": "Message to the peer. State facts and instructions clearly."
+      },
+      "replyToMessageRef": {
+        "type": "string",
+        "description": "Optional M# message reference to reply to."
+      }
+    },
+    "required": [
+      "conversationRef",
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "builtin:followup_agent_task": {
+    "type": "object",
+    "properties": {
+      "conversationRef": {
+        "type": "string",
+        "description": "Conversation reference C# returned by list_agents."
+      },
+      "text": {
+        "type": "string",
+        "description": "Concrete follow-up task."
+      },
+      "replyToMessageRef": {
+        "type": "string",
+        "description": "Optional M# message reference for the originating request."
+      }
+    },
+    "required": [
+      "conversationRef",
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "builtin:read_agent_messages": {
+    "type": "object",
+    "properties": {
+      "view": {
+        "type": "string",
+        "enum": [
+          "mailbox",
+          "conversation"
+        ],
+        "description": "mailbox reads peer messages; conversation reads the actual chat transcript of a team member."
+      },
+      "conversationRef": {
+        "type": "string",
+        "description": "C# team member conversation; required for conversation view, optional for mailbox."
+      },
+      "beforeMessageRef": {
+        "type": "string",
+        "description": "Older-page cursor: M# for mailbox, R# for conversation history. Use the returned olderMessageRef."
+      },
+      "messageRef": {
+        "type": "string",
+        "description": "Optional reference of a single message to read in full: M# for mailbox, R# for conversation history."
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "With messageRef: character offset of the page to read; use the returned nextOffset. Defaults to 0."
+      },
+      "afterMessageRef": {
+        "type": "string",
+        "description": "Optional M# cursor from the previous page."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "Maximum messages in a page; defaults to 20."
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "builtin:wait_agent_messages": {
+    "type": "object",
+    "properties": {
+      "afterMessageRef": {
+        "type": "string",
+        "description": "Optional M# cursor from the previous observation."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 60000,
+        "description": "Wait duration, at most 60 seconds; defaults to 30000."
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "builtin:ask_user": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "question": {
+        "type": "string",
+        "description": "The question shown to the user."
+      },
+      "options": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 8,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string",
+              "description": "Short user-facing option label."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional explanation of the outcome or trade-off for this option."
+            }
+          },
+          "required": [
+            "label"
+          ]
+        },
+        "description": "The choices offered to the user. Each label must be unique within the question."
+      },
+      "multiple": {
+        "type": "boolean",
+        "description": "Enable multiple selection. Optional; defaults to false (single choice)."
+      }
+    },
+    "required": [
+      "question",
+      "options"
+    ]
+  },
+  "builtin:list_conversations": {
+    "type": "object",
+    "properties": {
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "description": "Maximum conversations to return; defaults to 20."
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "builtin:read_conversation": {
+    "type": "object",
+    "properties": {
+      "conversationRef": {
+        "type": "string",
+        "description": "Conversation reference C# returned by list_conversations."
+      },
+      "beforeMessageRef": {
+        "type": "string",
+        "description": "Optional R# cursor returned as olderMessageRef."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "description": "Maximum messages in a page; defaults to 20."
+      },
+      "messageRef": {
+        "type": "string",
+        "description": "Optional R# reference of one transcript message to read in full, page by page; not combined with beforeMessageRef or limit."
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "With messageRef: character offset of the page to read; use the returned nextOffset. Defaults to 0."
+      }
+    },
+    "required": [
+      "conversationRef"
+    ],
+    "additionalProperties": false
+  },
+  "builtin:send_conversation_message": {
+    "type": "object",
+    "properties": {
+      "conversationRef": {
+        "type": "string",
+        "description": "Conversation reference C# returned by list_conversations."
+      },
+      "text": {
+        "type": "string",
+        "description": "Message or task. State facts, context and the expected result clearly."
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "message",
+          "followup"
+        ],
+        "description": "followup requests work and a reply; message only informs."
+      },
+      "replyToMessageRef": {
+        "type": "string",
+        "description": "Optional M# collaboration message reference being answered."
+      }
+    },
+    "required": [
+      "conversationRef",
+      "text",
+      "mode"
+    ],
+    "additionalProperties": false
+  },
+  "builtin:create_conversation": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "Complete task for the new conversation, including context, constraints and the expected result."
+      },
+      "title": {
+        "type": "string",
+        "description": "Optional short title shown in the conversation list; defaults to the start of prompt."
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "additionalProperties": false
+  },
+  "builtin:fork_conversation": {
+    "type": "object",
+    "properties": {
+      "conversationRef": {
+        "type": "string",
+        "description": "Optional conversation reference C# returned by list_conversations; omit to fork this conversation."
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "builtin:delete": {
+    "type": "object",
+    "properties": {
+      "paths": {
+        "type": "array",
+        "description": "File or directory paths to delete. Always use an array, even for one path. Relative paths are resolved from the current work environment root; absolute paths are supported when allowed by tool policy or when they are inside an explicitly allowed local work environment root.",
+        "items": {
+          "type": "string",
+          "description": "File or directory path to delete."
+        }
+      }
+    },
+    "required": [
+      "paths"
+    ]
+  },
+  "builtin:edit": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "File path. Relative paths are resolved from the current work environment root; absolute paths are supported when allowed by tool policy or when they are inside an explicitly allowed local work environment root."
+      },
+      "hunks": {
+        "type": "array",
+        "minItems": 1,
+        "description": "Ordered hunk blocks. This branch is mutually exclusive with insert and delete. Each hunk performs exact search/replace in this same file.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "oldContent": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Existing file text to find. Must be an exact non-empty substring of the current file at the time this hunk runs."
+            },
+            "newContent": {
+              "type": "string",
+              "description": "Replacement text exactly as it should appear in the final file. Use an empty string to remove the matched text."
+            },
+            "replaceAll": {
+              "type": "boolean",
+              "description": "Whether this hunk replaces every non-overlapping oldContent match. Defaults to false, replacing only the first match."
+            }
+          },
+          "required": [
+            "oldContent",
+            "newContent"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "insert": {
+        "type": "object",
+        "description": "Line insertion branch. Do not provide it together with hunks or delete.",
+        "properties": {
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based line number before which to insert content. Use line N+1 to append after the last line."
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Non-empty text to insert at the specified line position. May contain multiple lines separated by newlines."
+          }
+        },
+        "required": [
+          "line",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "delete": {
+        "type": "object",
+        "description": "Line deletion branch. Do not provide it together with hunks or insert.",
+        "properties": {
+          "startLine": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based first line to delete (inclusive)."
+          },
+          "endLine": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "1-based last line to delete (inclusive)."
+          }
+        },
+        "required": [
+          "startLine",
+          "endLine"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "description": "Provide exactly one edit branch: non-empty hunks, insert, or delete. Do not combine branches.",
+    "oneOf": [
+      {
+        "required": [
+          "hunks"
+        ],
+        "properties": {
+          "hunks": {
+            "minItems": 1
+          }
+        }
+      },
+      {
+        "required": [
+          "insert"
+        ],
+        "properties": {
+          "insert": {
+            "required": [
+              "line",
+              "content"
+            ]
+          }
+        }
+      },
+      {
+        "required": [
+          "delete"
+        ],
+        "properties": {
+          "delete": {
+            "required": [
+              "startLine",
+              "endLine"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "builtin:read": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "The usual input: a local file path. Relative paths are resolved from the current work environment root; absolute paths are supported when allowed by tool policy or when they are inside an explicitly allowed local work environment root."
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "text",
+          "attachment"
+        ],
+        "description": "Optional for path reads only. When omitted, recognized local PNG, JPEG, WebP, and PDF paths use \"attachment\"; all other paths use \"text\". Explicit \"attachment\" is supported only for those media paths."
+      },
+      "startLine": {
+        "type": "number",
+        "description": "Text path reads only. Optional 1-based start line (inclusive); omit it when not needed. A read longer than the per-read budget returns a leading slice instead of failing; compare the returned endLine with totalLines and continue from endLine + 1."
+      },
+      "endLine": {
+        "type": "number",
+        "description": "Text path reads only. Optional 1-based end line (inclusive); omit it when not needed."
+      },
+      "items": {
+        "type": "array",
+        "maxItems": 8,
+        "description": "Optional batch of 2-8 independent local text reads. Use this instead of path; omit it for a single-file read. Attachments are not supported in a batch.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Local text file path."
+            },
+            "startLine": {
+              "type": "number",
+              "description": "Optional 1-based inclusive start line. A read longer than the per-read budget returns a leading slice instead of failing; compare the returned endLine with totalLines and continue from endLine + 1."
+            },
+            "endLine": {
+              "type": "number",
+              "description": "Optional 1-based inclusive end line."
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      "attachmentId": {
+        "type": "string",
+        "description": "Rare optional input for a past user-supplied attachment. Use only an exact non-empty id shown in the LimCode managed attachment catalog. Omit this field for local path and batch reads; never send an empty or invented id."
+      },
+      "pages": {
+        "type": "string",
+        "description": "Managed TXT/PDF only. Optional \"N\" or \"N-M\" page range such as \"1-4\"; defaults to \"1\" and allows at most 4 consecutive pages. Omit for images and local path reads."
+      }
+    }
+  },
+  "builtin:run_agent": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": [
+          "spawn",
+          "send",
+          "list",
+          "read",
+          "wait",
+          "interrupt_subtree"
+        ],
+        "description": "Required. Explicitly select spawn, send, list, read, wait or interrupt_subtree. There is no default operation."
+      },
+      "prompt": {
+        "type": "string",
+        "description": "Required for spawn and send. Complete task or follow-up, including context, constraints and expected verification."
+      },
+      "answerBridgeId": {
+        "type": "string",
+        "description": "Required for send, read and interrupt_subtree. For wait, supply this or answerBridgeIds, never both."
+      },
+      "answerBridgeIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "maxItems": 32,
+        "description": "For wait only: 1 to 32 distinct existing child references. Mutually exclusive with answerBridgeId."
+      },
+      "taskName": {
+        "type": "string",
+        "description": "Required for spawn. Short responsibility label, such as \"trace send failure\"; the full task belongs in prompt."
+      },
+      "forkTurns": {
+        "type": "string",
+        "description": "For spawn only: \"none\" (default), \"all\", or a positive integer string such as \"3\". Copies committed completed turns, excluding current, interrupted and failed turns. Does not inherit execution ownership or authority."
+      },
+      "interrupt": {
+        "type": "boolean",
+        "description": "When continuing a child, true redirects its current work immediately; false or omitted queues the follow-up after its current turn."
+      },
+      "agent": {
+        "type": "object",
+        "description": "For spawn only. Selects the child Agent configuration.",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "The Agent type/configuration id to use, such as main, worker, or explore. The backend may create a temporary runtime mirror internally, but mirror ids are not valid types and should not be supplied here. Available types are appended to the tool description at runtime. Defaults to worker."
+          }
+        }
+      },
+      "foregroundWaitMs": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 86400000,
+        "description": "Optional for spawn/send. Foreground wait in milliseconds, default 0; the child keeps running after it expires."
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "direct",
+          "tree"
+        ],
+        "description": "Read-only list/read/wait scope. Defaults to direct children; tree includes verified descendants."
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "starting",
+          "active",
+          "idle",
+          "interrupting",
+          "interrupted",
+          "closed",
+          "needs_human"
+        ],
+        "description": "Optional exact ChildExecution status filter for list. Idle describes an available child; its latest Turn outcome is a separate field."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "List/read maximum page items, default 32. Token budgets may return fewer items or a partial source."
+      },
+      "cursor": {
+        "type": "string",
+        "description": "For list/read: nextCursor continues, rereadCursor repeats a truncated page. Keep the same scope, filters and target; immutable source identity must match."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 60000,
+        "description": "For wait only. Observation timeout in milliseconds, default 0; no child state is changed."
+      },
+      "scheduling": {
+        "type": "string",
+        "enum": [
+          "parallel",
+          "serial"
+        ],
+        "description": "Tool-call scheduling mode. Defaults to parallel. Use serial when this task may interfere with other tool calls."
+      }
+    },
+    "required": [
+      "operation"
+    ],
+    "additionalProperties": false
+  },
+  "builtin:skills": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "The skill name (its directory slug), taken from the available skills list."
+      },
+      "source": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ]
+  },
+  "builtin:submit_plan": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "plan": {
+        "type": "string",
+        "description": "The complete plan body. Include steps, scope, validation, and any risks directly in this text."
+      },
+      "taskList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "rewrite"
+            ],
+            "description": "submit_plan always provides a complete replacement task list."
+          },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Task title. In update mode this is also used as the key to match existing tasks; prefer a short verb-object phrase."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Additional notes, acceptance criteria, or context for the task. Also shown as the current-activity line while the task is in progress."
+                },
+                "status": {
+                  "type": "string",
+                  "description": "Task status: pending, in_progress, completed, blocked, or cancelled."
+                },
+                "delete": {
+                  "type": "boolean",
+                  "description": "Only used in update mode. Set to true to delete the task with the same title."
+                }
+              },
+              "required": [
+                "title"
+              ]
+            },
+            "description": "Non-empty complete ordered execution task list. Titles must be unique."
+          }
+        },
+        "required": [
+          "mode",
+          "items"
+        ],
+        "description": "Required non-empty complete ordered execution task list. mode must be \"rewrite\" and titles must be unique."
+      }
+    },
+    "required": [
+      "plan",
+      "taskList"
+    ]
+  },
+  "builtin:switch_work_environment": {
+    "type": "object",
+    "properties": {
+      "workEnvironmentId": {
+        "type": "string",
+        "description": "Target work environment id. Use one of the work environment ids listed in the tool definition."
+      }
+    },
+    "required": [
+      "workEnvironmentId"
+    ]
+  },
+  "builtin:update_task_list": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "rewrite",
+          "update"
+        ],
+        "description": "rewrite = replace the full task list; update = apply incremental changes to the task list."
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Task title. In update mode this is also used as the key to match existing tasks; prefer a short verb-object phrase."
+            },
+            "description": {
+              "type": "string",
+              "description": "Additional notes, acceptance criteria, or context for the task. Also shown as the current-activity line while the task is in progress."
+            },
+            "status": {
+              "type": "string",
+              "description": "Task status: pending, in_progress, completed, blocked, or cancelled."
+            },
+            "delete": {
+              "type": "boolean",
+              "description": "Only used in update mode. Set to true to delete the task with the same title."
+            }
+          },
+          "required": [
+            "title"
+          ]
+        },
+        "description": "Task entries. In rewrite mode this is the full list; in update mode these are the changed entries."
+      }
+    },
+    "required": [
+      "mode",
+      "items"
+    ]
+  },
+  "builtin:transfer": {
+    "type": "object",
+    "properties": {
+      "transfers": {
+        "type": "array",
+        "description": "Array of transfer tasks. Must be an array, even when transferring a single file.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "fromEnvironment": {
+              "type": "string",
+              "description": "Source work environment id, or current for the currently active work environment."
+            },
+            "fromPath": {
+              "type": "string",
+              "description": "Source path, relative or absolute. Relative paths are resolved against the root/workdir of fromEnvironment; directories should end with / or \\."
+            },
+            "toEnvironment": {
+              "type": "string",
+              "description": "Target work environment id, or current for the currently active work environment."
+            },
+            "toPath": {
+              "type": "string",
+              "description": "Target path, relative or absolute. Relative paths are resolved against the root/workdir of toEnvironment; a directory path refers to the target directory itself."
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "file",
+                "directory"
+              ],
+              "description": "Transfer type, defaults to auto."
+            },
+            "overwrite": {
+              "type": "boolean",
+              "description": "Whether to overwrite when the target exists, defaults to false."
+            },
+            "createDirs": {
+              "type": "boolean",
+              "description": "Whether to automatically create the target parent directory / target directory, defaults to true."
+            }
+          },
+          "required": [
+            "fromEnvironment",
+            "fromPath",
+            "toEnvironment",
+            "toPath"
+          ]
+        }
+      },
+      "verify": {
+        "type": "string",
+        "enum": [
+          "none",
+          "size"
+        ],
+        "description": "Verification mode. none = no verification; size = compare source/target file sizes (default)."
+      }
+    },
+    "required": [
+      "transfers"
+    ]
+  },
+  "builtin:write": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "File path. Relative paths are resolved from the current work environment root; absolute paths are supported when allowed by tool policy or when they are inside an explicitly allowed local work environment root."
+      },
+      "content": {
+        "type": "string",
+        "description": "Complete UTF-8 content to write to the file."
+      }
+    },
+    "required": [
+      "path",
+      "content"
+    ]
+  },
+  "mcp-filesystem-like": {
+    "type": "object",
+    "title": "ReadFileArgs",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path",
+        "minLength": 1
+      },
+      "encoding": {
+        "type": "string",
+        "enum": [
+          "utf8",
+          "base64"
+        ],
+        "default": "utf8"
+      },
+      "range": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "integer"
+              },
+              "end": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "start"
+            ]
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^[a-z]+$"
+        },
+        "uniqueItems": true
+      },
+      "meta": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "title": {
+        "type": "string"
+      },
+      "default": {
+        "type": "string"
+      },
+      "$defs": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "path",
+      "title"
+    ],
+    "additionalProperties": false
+  },
+  "oneof-allof": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "oneOf": [
+          {
+            "const": "fast"
+          },
+          {
+            "const": "slow"
+          }
+        ]
+      },
+      "combo": {
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "required": [
+              "a"
+            ]
+          }
+        ]
+      },
+      "nullable": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    }
+  },
+  "empty-object": {
+    "type": "object",
+    "properties": {}
+  }
+}
