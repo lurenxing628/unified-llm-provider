@@ -189,6 +189,9 @@ export class OpenAICompatibleFormat implements FormatAdapter {
   decodeResponse(raw: unknown): LLMResponse {
     const data = raw as any;
     const choice = data.choices?.[0];
+    if (choice?.finish_reason === 'error') {
+      return createFinishReasonErrorResponse(data, choice);
+    }
     if (!choice?.message) {
       throw new Error(`OpenAI Compatible API 未返回有效内容: ${JSON.stringify(data)}`);
     }
@@ -251,6 +254,15 @@ export class OpenAICompatibleFormat implements FormatAdapter {
     const data = raw as any;
     const choice = data.choices?.[0];
     const chunk: LLMStreamChunk = {};
+
+    if (choice?.finish_reason === 'error') {
+      // 流已被上游以错误终止：丢弃尚未完成的工具调用，流结束时也不再补发任何内容。
+      const streamState = state as OpenAICompatibleStreamState;
+      streamState.pendingToolCalls.clear();
+      streamState.lastToolCallKey = undefined;
+      streamState.terminatedWithError = true;
+      return createFinishReasonErrorChunk(data, choice);
+    }
 
     // reasoning_content 流式增量（DeepSeek / KIMI 等模型的 thinking 输出）
     if (choice?.delta?.reasoning_content) {
@@ -362,6 +374,7 @@ export class OpenAICompatibleFormat implements FormatAdapter {
    */
   finalizeStream(state: StreamDecodeState): LLMStreamChunk | undefined {
     const streamState = state as OpenAICompatibleStreamState;
+    if (streamState.terminatedWithError) return undefined;
     const pending = streamState.pendingToolCalls;
     if (!pending || pending.size === 0) return undefined;
 
@@ -399,6 +412,8 @@ interface OpenAICompatibleStreamState extends StreamDecodeState {
   /** 最近一次写入的调用；既没有 index 也没有 id 的续传分片归到这里。 */
   lastToolCallKey?: number | string;
   anonymousToolCallCount: number;
+  /** 已收到 finish_reason:"error"。 */
+  terminatedWithError?: boolean;
 }
 
 type StreamToolArgumentsProblem = 'incomplete' | 'not_object';
@@ -530,6 +545,52 @@ function createToolArgumentsErrorChunk(
     error: { kind: 'decode_error', message, rawChunk },
     rawChunk,
     ...(finishReason ? { finishReason } : {}),
+  };
+}
+
+// ============ finish_reason: "error" ============
+
+/**
+ * OpenRouter 文档（https://openrouter.ai/docs/api/reference/errors-and-debugging）：
+ * 已经返回 200 之后发生的错误，流式以一个 `finish_reason: "error"` 的块终止流，非流式把 error
+ * 放在 choice 里并带 `finish_reason: "error"`；choice 上可能带 `native_finish_reason`
+ * （如 Gemini 的 MALFORMED_FUNCTION_CALL）。顶层带 `error` 的块已由 response 层按 stream_error
+ * 处理；这里补上只有 `finish_reason: "error"` 的情况，按错误上报而不是当作正常结束。
+ */
+function describeFinishReasonError(data: any, choice: any): { message: string; code?: string } {
+  const nativeFinishReason = typeof choice?.native_finish_reason === 'string' && choice.native_finish_reason
+    ? choice.native_finish_reason
+    : undefined;
+  const nested = choice?.error && typeof choice.error === 'object' ? choice.error : undefined;
+  const upstreamMessage = typeof nested?.message === 'string' && nested.message
+    ? nested.message
+    : typeof data?.error?.message === 'string' && data.error.message ? data.error.message : undefined;
+  const rawCode = nested?.code ?? data?.error?.code;
+  const code = typeof rawCode === 'string' || typeof rawCode === 'number' ? String(rawCode) : undefined;
+  const details = [
+    nativeFinishReason ? `native_finish_reason: ${nativeFinishReason}` : undefined,
+    code ? `code: ${code}` : undefined,
+  ].filter(Boolean).join('，');
+  const message = `上游以 finish_reason: "error" 结束了生成${details ? `（${details}）` : ''}${upstreamMessage ? `：${upstreamMessage}` : ''}`;
+  return { message, ...(code ? { code } : {}) };
+}
+
+function createFinishReasonErrorChunk(data: any, choice: any): LLMStreamChunk {
+  const { message, code } = describeFinishReasonError(data, choice);
+  return {
+    error: { kind: 'stream_error', message, ...(code ? { code } : {}), rawChunk: data },
+    rawChunk: data,
+    finishReason: 'error',
+  };
+}
+
+function createFinishReasonErrorResponse(data: any, choice: any): LLMResponse {
+  const { message, code } = describeFinishReasonError(data, choice);
+  return {
+    content: { role: 'model', parts: [{ text: '' }] },
+    finishReason: 'error',
+    error: { kind: 'response_error', message, ...(code ? { code } : {}), rawBody: data },
+    rawResponse: data,
   };
 }
 

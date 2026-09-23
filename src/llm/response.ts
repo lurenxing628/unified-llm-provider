@@ -146,7 +146,11 @@ export async function processResponse(
   }
 
   try {
-    const result = format.decodeResponse(rawResponse);
+    const decoded = format.decodeResponse(rawResponse);
+    // 格式适配器识别出的错误（如 finish_reason:"error"）只知道响应体语义，这里补上 HTTP 上下文。
+    const result = decoded.error && decoded.error.status === undefined
+      ? { ...decoded, error: { ...decoded.error, status: res.status, statusText: res.statusText, headers, bodyText } }
+      : decoded;
     return observeLlmObject(result, getLlmResponseObserver(res), () => ({ kind: 'decoded', value: result }));
   } catch (err) {
     return observed(createErrorResponse({
