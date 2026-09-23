@@ -3,7 +3,7 @@ export type NormalizedThinkingLevel = 'not-set' | 'none' | 'minimal' | 'low' | '
 export type GeminiThinkingLevel = Extract<NormalizedThinkingLevel, 'minimal' | 'low' | 'medium' | 'high'>;
 export type ClaudeThinkingLevel = Extract<NormalizedThinkingLevel, 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
 export type OpenAIThinkingLevel = Extract<NormalizedThinkingLevel, 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
-export type DeepSeekThinkingLevel = Extract<NormalizedThinkingLevel, 'none' | 'high' | 'max'>;
+export type DeepSeekThinkingLevel = Extract<NormalizedThinkingLevel, 'none' | 'low' | 'high' | 'max'>;
 
 const NON_SET_LEVELS = new Set(['not-set', 'non-set', 'not_set', 'non_set', 'notset', 'nonset', 'unset']);
 
@@ -76,13 +76,27 @@ export function mapOpenAIThinkingLevel(value: unknown): OpenAIThinkingLevel | un
 
 export const mapOpenAIResponsesThinkingLevel = mapOpenAIThinkingLevel;
 
+/**
+ * DeepSeek reasoning_effort 只接受 none / low / high / max（默认开启思考、effort=high）。
+ * 官方把其他常见等级映射为：minimal → low，medium / xhigh → high
+ * （https://api-docs.deepseek.com/api/create-chat-completion 的 reasoning_effort 说明，
+ *  https://api-docs.deepseek.com/guides/thinking_mode 的 effort 对照表）。
+ * 这里按同样的映射直接发送合法取值，避免这些等级被当成未设置而落到服务端默认的 high。
+ */
 export function mapDeepSeekThinkingLevel(value: unknown): DeepSeekThinkingLevel | undefined {
   const level = normalizeThinkingLevel(value);
   switch (level) {
     case 'none':
+      return 'none';
+    case 'minimal':
+    case 'low':
+      return 'low';
+    case 'medium':
     case 'high':
+    case 'xhigh':
+      return 'high';
     case 'max':
-      return level;
+      return 'max';
     default:
       return undefined;
   }

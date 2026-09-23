@@ -15,6 +15,9 @@ const INTENTIONAL_CHANGES: Record<string, string> = {
   // A6：OpenAI 文档 “For tool messages, only type `text` is supported”，图片移到 tool 消息之后的 user 消息。
   'tool-result-media|openai-compatible|nostream': 'A6',
   'tool-result-media|openai-compatible|stream': 'A6',
+  // A7：DeepSeek 文档把 medium 映射为 high，现在显式发送 thinking + reasoning_effort。
+  'plain-chat|deepseek|nostream': 'A7',
+  'plain-chat|deepseek|stream': 'A7',
 };
 
 const requests = JSON.parse(readFixture('requests.json')) as Record<string, LLMRequest>;
@@ -37,5 +40,21 @@ describe('OpenAI 兼容请求编码回归', () => {
 
   it.each(cases.filter(item => INTENTIONAL_CHANGES[item.key]))('$key 按修复项有意变化', ({ key, name, kind, stream }) => {
     expect(JSON.stringify(encode(name, kind, stream))).not.toBe(JSON.stringify(baseline[key]));
+  });
+});
+
+describe('有意变化的请求只改动对应字段', () => {
+  it('A7 plain-chat|deepseek：medium 现在发送 thinking=enabled + reasoning_effort=high，其余字段与修复前一致', () => {
+    for (const stream of [false, true]) {
+      const key = `plain-chat|deepseek|${stream ? 'stream' : 'nostream'}`;
+      const body = encode('plain-chat', 'deepseek', stream) as Record<string, unknown>;
+      const before = baseline[key] as Record<string, unknown>;
+      expect(before.thinking).toBeUndefined();
+      expect(before.reasoning_effort).toBeUndefined();
+      const { thinking, reasoning_effort, ...rest } = body;
+      expect(thinking).toEqual({ type: 'enabled' });
+      expect(reasoning_effort).toBe('high');
+      expect(JSON.stringify(rest)).toBe(JSON.stringify(before));
+    }
   });
 });

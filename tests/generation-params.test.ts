@@ -443,37 +443,49 @@ describe('unified generation params', () => {
     expect((invalidMode.body as any).reasoning).toBeUndefined();
   });
 
-  it('DeepSeek 只映射 none/high/max thinkingLevel，其它等级视为 non-set', async () => {
+  it('DeepSeek 按官方取值映射 thinkingLevel：none 关闭，minimal/low → low，medium/high/xhigh → high，max → max', async () => {
+    // https://api-docs.deepseek.com/api/create-chat-completion（reasoning_effort：none/low/high/max，
+    // minimal 按 low、medium/xhigh 按 high）；https://api-docs.deepseek.com/guides/thinking_mode
     const provider = createDeepSeekProvider({
       provider: 'deepseek',
       model: 'deepseek-test',
       apiKey: 'sk-test',
       baseUrl: 'https://api.deepseek.test/v1',
     });
-
-    const high = await provider.dryRun({
+    const dryRun = (thinkingLevel: string) => provider.dryRun({
       contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
-      generationConfig: { thinkingConfig: { thinkingLevel: 'high' } },
+      generationConfig: { thinkingConfig: { thinkingLevel } },
     } satisfies LLMRequest, { stream: false });
 
-    expect((high.body as any).thinking).toEqual({ type: 'enabled' });
-    expect((high.body as any).reasoning_effort).toBe('high');
+    const expected: Record<string, string> = {
+      minimal: 'low',
+      low: 'low',
+      medium: 'high',
+      high: 'high',
+      xhigh: 'high',
+      'extra-high': 'high',
+      max: 'max',
+    };
+    for (const [level, effort] of Object.entries(expected)) {
+      const body = (await dryRun(level)).body as any;
+      expect({ level, thinking: body.thinking, reasoning_effort: body.reasoning_effort })
+        .toEqual({ level, thinking: { type: 'enabled' }, reasoning_effort: effort });
+    }
 
-    const none = await provider.dryRun({
-      contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
-      generationConfig: { thinkingConfig: { thinkingLevel: 'none' } },
-    } satisfies LLMRequest, { stream: false });
+    const none = (await dryRun('none')).body as any;
+    expect(none.thinking).toEqual({ type: 'disabled' });
+    expect(none.reasoning_effort).toBeUndefined();
 
-    expect((none.body as any).thinking).toEqual({ type: 'disabled' });
-    expect((none.body as any).reasoning_effort).toBeUndefined();
+    for (const level of ['not-set', 'unknown']) {
+      const body = (await dryRun(level)).body as any;
+      expect(body.thinking).toBeUndefined();
+      expect(body.reasoning_effort).toBeUndefined();
+    }
 
-    const unsupported = await provider.dryRun({
-      contents: [{ role: 'user', parts: [{ text: 'hello' }] }],
-      generationConfig: { thinkingConfig: { thinkingLevel: 'medium' } },
-    } satisfies LLMRequest, { stream: false });
-
-    expect((unsupported.body as any).thinking).toBeUndefined();
-    expect((unsupported.body as any).reasoning_effort).toBeUndefined();
+    // 原行为不变：没有 thinkingConfig 时两个字段都不发送
+    const unset = (await provider.dryRun({ contents: [{ role: 'user', parts: [{ text: 'hello' }] }] }, { stream: false })).body as any;
+    expect(unset.thinking).toBeUndefined();
+    expect(unset.reasoning_effort).toBeUndefined();
   });
 
 });

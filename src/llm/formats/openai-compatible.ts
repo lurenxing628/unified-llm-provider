@@ -202,7 +202,8 @@ export class OpenAICompatibleFormat implements FormatAdapter {
         const thinkingLevel = mapDeepSeekThinkingLevel(gc.thinkingConfig?.thinkingLevel);
         if (thinkingLevel === 'none') {
           body.thinking = { type: 'disabled' };
-        } else if (thinkingLevel === 'high' || thinkingLevel === 'max') {
+        } else if (thinkingLevel) {
+          // DeepSeek：thinking.type=enabled + 合法的 reasoning_effort（low / high / max）。
           body.thinking = { type: 'enabled' };
           body.reasoning_effort = thinkingLevel;
         }
