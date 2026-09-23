@@ -6,7 +6,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { ClaudeFormat } from '../src/index.js';
+import {
+  CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX,
+  ClaudeFormat,
+  createClaudeProvider,
+  decodeResponseFromFormat,
+} from '../src/index.js';
 import type { LLMRequest } from '../src/index.js';
 
 const TOOLS = [{ functionDeclarations: [
@@ -517,5 +522,139 @@ describe('B1 Claude 思考块保持原顺序', () => {
       { type: 'text', text: 'answer' },
       { type: 'thinking', thinking: 'unsigned reasoning' },
     ]);
+  });
+});
+
+describe('B2 Claude redacted_thinking 保留并原样回放', () => {
+  // 依据：https://platform.claude.com/docs/en/build-with-claude/thinking#redacted-thinking-blocks
+  // “pass redacted_thinking blocks back to the API unchanged”；过滤时只认 thinking 会破坏多轮协议。
+  const REDACTED_DATA = 'EmwKAhgBEgy3va3pzix/LafPsn4aDFIT2Xlxh0L5L8rLVyIwxtE3rAFBa8cr3qpPkNRj2YfWXGmKDxH4mPnZ5sQ7vB5URj';
+
+  it('前缀不含冒号且以非 base64 字符开头，不会与真实签名或便携签名 provider 前缀冲突', () => {
+    expect(CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX).toBe('#redacted_thinking#');
+    expect(CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX).not.toContain(':');
+    expect(/^[A-Za-z0-9+/=]/.test(CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX)).toBe(false);
+  });
+
+  it('非流式解码：redacted_thinking 按原位置保存为 thought part，数据放在 claude 签名命名空间', () => {
+    const decoded = new ClaudeFormat('claude-sonnet-4-6').decodeResponse({
+      content: [
+        { type: 'thinking', thinking: 'plan', signature: 'EqQBsigA' },
+        { type: 'redacted_thinking', data: REDACTED_DATA },
+        { type: 'text', text: 'ok' },
+      ],
+      stop_reason: 'end_turn',
+    });
+
+    expect(decoded.content.parts).toEqual([
+      { text: 'plan', thought: true, thoughtSignatures: { claude: 'EqQBsigA' } },
+      { text: '', thought: true, thoughtSignatures: { claude: `#redacted_thinking#${REDACTED_DATA}` } },
+      { text: 'ok' },
+    ]);
+  });
+
+  it('流式解码：content_block_start 的 redacted_thinking 立即产出 thought part 与 chunk 签名', () => {
+    const format = new ClaudeFormat('claude-sonnet-4-6');
+    const state = format.createStreamState();
+    const chunk = format.decodeStreamChunk({
+      type: 'content_block_start',
+      index: 1,
+      content_block: { type: 'redacted_thinking', data: REDACTED_DATA },
+    }, state);
+    const stop = format.decodeStreamChunk({ type: 'content_block_stop', index: 1 }, state);
+
+    expect(chunk).toEqual({
+      partsDelta: [{ text: '', thought: true, thoughtSignatures: { claude: `#redacted_thinking#${REDACTED_DATA}` } }],
+      thoughtSignatures: { claude: `#redacted_thinking#${REDACTED_DATA}` },
+    });
+    expect(stop).toEqual({});
+  });
+
+  it('编码：带前缀的 thought part 原样还原为 {type:"redacted_thinking", data}，且保持在原位置', () => {
+    const body = encode({
+      contents: [
+        { role: 'user', parts: [{ text: 'go' }] },
+        { role: 'model', parts: [
+          { text: 'plan', thought: true, thoughtSignatures: { claude: 'EqQBsigA' } },
+          { text: '', thought: true, thoughtSignatures: { claude: `#redacted_thinking#${REDACTED_DATA}` } },
+          { functionCall: { name: 'read_file', args: { path: 'a' }, callId: 'toolu_1' } },
+        ] },
+        { role: 'user', parts: [{ functionResponse: { name: 'read_file', response: { ok: 1 }, callId: 'toolu_1' } }] },
+      ],
+    });
+
+    expect(body.messages[1].content).toEqual([
+      { type: 'thinking', thinking: 'plan', signature: 'EqQBsigA' },
+      { type: 'redacted_thinking', data: REDACTED_DATA },
+      { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: { path: 'a' } },
+    ]);
+  });
+
+  it('真实签名（base64）仍编码为 thinking 块，不会被误认成 redacted_thinking', () => {
+    const body = encode({
+      contents: [
+        { role: 'user', parts: [{ text: 'go' }] },
+        { role: 'model', parts: [{ text: '', thought: true, thoughtSignatures: { claude: 'redacted_thinking+EqQB/sig==' } }] },
+      ],
+    });
+    expect(body.messages[1].content).toEqual([
+      { type: 'thinking', thinking: '', signature: 'redacted_thinking+EqQB/sig==' },
+    ]);
+  });
+
+  it('经便携字符串签名（claude:<value>）往返后仍能还原：解码 → 字符串签名 → 按首个冒号拆分 → 回编', async () => {
+    const response = decodeResponseFromFormat({
+      content: [
+        { type: 'redacted_thinking', data: REDACTED_DATA },
+        { type: 'text', text: 'ok' },
+      ],
+      stop_reason: 'end_turn',
+    }, { format: 'claude', model: 'claude-sonnet-4-6' });
+    const redactedPart = response.content.parts[0] as any;
+    expect(redactedPart.thoughtSignature).toBe(`claude:#redacted_thinking#${REDACTED_DATA}`);
+
+    // 模拟 LimCode 存储：每个 part 只保留一个便携签名字符串，回编时按首个冒号拆回 { provider: value }。
+    const portable: string = redactedPart.thoughtSignature;
+    const colon = portable.indexOf(':');
+    const restored = { [portable.slice(0, colon)]: portable.slice(colon + 1) };
+    expect(restored).toEqual({ claude: `#redacted_thinking#${REDACTED_DATA}` });
+
+    const provider = createClaudeProvider({
+      provider: 'claude',
+      model: 'claude-sonnet-4-6',
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.anthropic.test/v1',
+    });
+    const dry = await provider.dryRun({
+      contents: [
+        { role: 'user', parts: [{ text: 'go' }] },
+        { role: 'model', parts: [
+          { text: '', thought: true, thoughtSignature: portable, thoughtSignatures: restored },
+          { text: 'ok' },
+        ] },
+        { role: 'user', parts: [{ text: 'next' }] },
+      ],
+    } satisfies LLMRequest, { stream: false });
+
+    expect((dry.body as any).messages[1].content).toEqual([
+      { type: 'redacted_thinking', data: REDACTED_DATA },
+      { type: 'text', text: 'ok' },
+    ]);
+  });
+
+  it('data 含非 base64 字符（冒号等）时也能原样往返', () => {
+    const odd = 'a:b#c/d+e=';
+    const format = new ClaudeFormat('claude-sonnet-4-6');
+    const decoded = format.decodeResponse({ content: [{ type: 'redacted_thinking', data: odd }], stop_reason: 'end_turn' });
+    const body = encode({ contents: [{ role: 'user', parts: [{ text: 'go' }] }, decoded.content] }, format);
+    expect(body.messages[1].content).toEqual([{ type: 'redacted_thinking', data: odd }]);
+  });
+
+  it('空 data 的 redacted_thinking 不产生 part（没有可回放的内容）', () => {
+    const decoded = new ClaudeFormat('claude-sonnet-4-6').decodeResponse({
+      content: [{ type: 'redacted_thinking', data: '' }, { type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn',
+    });
+    expect(decoded.content.parts).toEqual([{ text: 'ok' }]);
   });
 });

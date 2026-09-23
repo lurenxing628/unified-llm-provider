@@ -26,6 +26,39 @@ interface NormalizedClaudePromptCacheConfig {
   };
 }
 
+/**
+ * `redacted_thinking` 块在统一格式里的表示。
+ *
+ * Claude 在思考被安全策略脱敏时返回 `{ type: "redacted_thinking", data }`，data 是不透明的
+ * 加密内容，续写多轮 / 工具调用时必须原样回传，否则同一 assistant 消息里的思考块序列就被改动了
+ * （https://platform.claude.com/docs/en/build-with-claude/thinking#redacted-thinking-blocks）。
+ *
+ * 解码时把它保存成一个 thought part：`text` 为空，`thoughtSignatures.claude` 为本前缀 + data；
+ * 编码时凡是 Claude 签名以本前缀开头的 thought part，都原样还原成 `{ type: "redacted_thinking", data }`。
+ *
+ * 前缀选 `#redacted_thinking#` 是因为：
+ * - 真实 Claude 签名（thinking.signature）是 base64 字符串（字符集 `[A-Za-z0-9+/=]`），不含 `#`，
+ *   不可能以本前缀开头，所以不会把真实签名误当成 redacted 数据，反之亦然；
+ * - 前缀里没有 `:`，便携签名字符串 `claude:<value>` 的解析（本库 parseThoughtSignature、LimCode
+ *   扩展 parsePortableThoughtSignature 只认 `[A-Za-z0-9_-]+:` 形式的 provider 前缀）不会把它
+ *   误拆成一个叫 `redacted_thinking` 的 provider；存成 `claude:#redacted_thinking#<data>` 后能原样往返。
+ */
+export const CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX = '#redacted_thinking#';
+
+function createClaudeRedactedThinkingPart(data: unknown): Part | undefined {
+  if (typeof data !== 'string' || !data) return undefined;
+  return {
+    text: '',
+    thought: true,
+    thoughtSignatures: { claude: `${CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX}${data}` },
+  };
+}
+
+function readClaudeRedactedThinkingData(signature: string | undefined): string | undefined {
+  if (!signature || !signature.startsWith(CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX)) return undefined;
+  return signature.slice(CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX.length);
+}
+
 export class ClaudeFormat implements FormatAdapter {
   private readonly promptCache: NormalizedClaudePromptCacheConfig;
 
@@ -70,8 +103,14 @@ export class ClaudeFormat implements FormatAdapter {
         // 旧实现会改写成 [thinking, thinking, text, tool_use]。
         for (const part of content.parts) {
           if (isTextPart(part) && part.thought === true) {
-            // 即便没有 Claude 签名，也保留 thought 文本，避免跨格式转换时丢失 reasoning/thinking 内容。
             const sig = part.thoughtSignatures?.claude;
+            const redactedData = readClaudeRedactedThinkingData(sig);
+            if (redactedData !== undefined) {
+              // B2：解码时保存的 redacted_thinking 原样还原，data 不做任何改写。
+              if (redactedData) contentBlocks.push({ type: 'redacted_thinking', data: redactedData });
+              continue;
+            }
+            // 即便没有 Claude 签名，也保留 thought 文本，避免跨格式转换时丢失 reasoning/thinking 内容。
             const thinkingText = part.text || '';
             if (!thinkingText && !sig) continue;
             contentBlocks.push({
@@ -220,6 +259,11 @@ export class ClaudeFormat implements FormatAdapter {
             thought: true,
             thoughtSignatures: { claude: block.signature },
           });
+        } else if (block.type === 'redacted_thinking') {
+          // Claude redacted thinking block: { type: "redacted_thinking", data: "加密内容" }，
+          // 按原位置保留，回放时还原（见 CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX）。
+          const part = createClaudeRedactedThinkingPart(block.data);
+          if (part) parts.push(part);
         }
       }
     }
@@ -262,6 +306,14 @@ export class ClaudeFormat implements FormatAdapter {
         } else if (data.content_block?.type === 'thinking') {
           // 标记进入 thinking block
           st.inThinkingBlock = true;
+        } else if (data.content_block?.type === 'redacted_thinking') {
+          // redacted_thinking 没有 delta，data 在 content_block_start 里一次给全。
+          // 与 signature_delta 一样，同时放在 partsDelta 和 chunk.thoughtSignatures 上。
+          const part = createClaudeRedactedThinkingPart(data.content_block.data);
+          if (part) {
+            chunk.partsDelta = [part];
+            chunk.thoughtSignatures = { claude: `${CLAUDE_REDACTED_THINKING_SIGNATURE_PREFIX}${data.content_block.data}` };
+          }
         }
         break;
 
