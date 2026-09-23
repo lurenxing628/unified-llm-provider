@@ -1,0 +1,1612 @@
+{
+  "plain-chat|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are helpful."
+      },
+      {
+        "role": "user",
+        "content": "hello"
+      },
+      {
+        "role": "assistant",
+        "content": "hi there"
+      },
+      {
+        "role": "user",
+        "content": "weather? in Paris"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ]
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "detailed": {
+                    "type": "boolean"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "definitions": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_items",
+          "description": "List items.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      }
+    ],
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_tokens": 256,
+    "stop": [
+      "END"
+    ],
+    "reasoning_effort": "medium"
+  },
+  "plain-chat|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are helpful."
+      },
+      {
+        "role": "user",
+        "content": "hello"
+      },
+      {
+        "role": "assistant",
+        "content": "hi there"
+      },
+      {
+        "role": "user",
+        "content": "weather? in Paris"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ]
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "detailed": {
+                    "type": "boolean"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "definitions": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_items",
+          "description": "List items.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      }
+    ],
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_tokens": 256,
+    "stop": [
+      "END"
+    ],
+    "reasoning_effort": "medium",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "plain-chat|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are helpful."
+      },
+      {
+        "role": "user",
+        "content": "hello"
+      },
+      {
+        "role": "assistant",
+        "content": "hi there"
+      },
+      {
+        "role": "user",
+        "content": "weather? in Paris"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ]
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "detailed": {
+                    "type": "boolean"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "definitions": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_items",
+          "description": "List items.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      }
+    ],
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_tokens": 256,
+    "stop": [
+      "END"
+    ]
+  },
+  "plain-chat|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are helpful."
+      },
+      {
+        "role": "user",
+        "content": "hello"
+      },
+      {
+        "role": "assistant",
+        "content": "hi there"
+      },
+      {
+        "role": "user",
+        "content": "weather? in Paris"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ]
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "detailed": {
+                    "type": "boolean"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "definitions": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_items",
+          "description": "List items.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      }
+    ],
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_tokens": 256,
+    "stop": [
+      "END"
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "tool-roundtrip|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "weather in Paris and Tokyo, then list"
+      },
+      {
+        "role": "assistant",
+        "content": "Let me check.",
+        "tool_calls": [
+          {
+            "id": "call_a",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Paris\"}"
+            }
+          },
+          {
+            "id": "call_b",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Tokyo\"}"
+            }
+          }
+        ],
+        "reasoning_content": "thinking about it",
+        "reasoning_signature": "sig-plain-1"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_a",
+        "content": "{\"temp\":\"18C\"}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_b",
+        "content": "{\"temp\":\"25C\"}"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_c",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_c",
+        "content": "{\"items\":[]}"
+      },
+      {
+        "role": "user",
+        "content": "thanks"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ]
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "detailed": {
+                    "type": "boolean"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "definitions": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_items",
+          "description": "List items.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      }
+    ]
+  },
+  "tool-roundtrip|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "weather in Paris and Tokyo, then list"
+      },
+      {
+        "role": "assistant",
+        "content": "Let me check.",
+        "tool_calls": [
+          {
+            "id": "call_a",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Paris\"}"
+            }
+          },
+          {
+            "id": "call_b",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Tokyo\"}"
+            }
+          }
+        ],
+        "reasoning_content": "thinking about it",
+        "reasoning_signature": "sig-plain-1"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_a",
+        "content": "{\"temp\":\"18C\"}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_b",
+        "content": "{\"temp\":\"25C\"}"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_c",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_c",
+        "content": "{\"items\":[]}"
+      },
+      {
+        "role": "user",
+        "content": "thanks"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ]
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "detailed": {
+                    "type": "boolean"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "definitions": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_items",
+          "description": "List items.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "tool-roundtrip|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "weather in Paris and Tokyo, then list"
+      },
+      {
+        "role": "assistant",
+        "content": "Let me check.",
+        "tool_calls": [
+          {
+            "id": "call_a",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Paris\"}"
+            }
+          },
+          {
+            "id": "call_b",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Tokyo\"}"
+            }
+          }
+        ],
+        "reasoning_content": "thinking about it",
+        "reasoning_signature": "sig-plain-1"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_a",
+        "content": "{\"temp\":\"18C\"}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_b",
+        "content": "{\"temp\":\"25C\"}"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_c",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_c",
+        "content": "{\"items\":[]}"
+      },
+      {
+        "role": "user",
+        "content": "thanks"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ]
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "detailed": {
+                    "type": "boolean"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "definitions": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_items",
+          "description": "List items.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      }
+    ]
+  },
+  "tool-roundtrip|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "weather in Paris and Tokyo, then list"
+      },
+      {
+        "role": "assistant",
+        "content": "Let me check.",
+        "tool_calls": [
+          {
+            "id": "call_a",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Paris\"}"
+            }
+          },
+          {
+            "id": "call_b",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Tokyo\"}"
+            }
+          }
+        ],
+        "reasoning_content": "thinking about it",
+        "reasoning_signature": "sig-plain-1"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_a",
+        "content": "{\"temp\":\"18C\"}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_b",
+        "content": "{\"temp\":\"25C\"}"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_c",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_c",
+        "content": "{\"items\":[]}"
+      },
+      {
+        "role": "user",
+        "content": "thanks"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get weather",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ]
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "detailed": {
+                    "type": "boolean"
+                  },
+                  "days": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              "definitions": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "list_items",
+          "description": "List items.",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "separate-tool-contents|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "go"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          },
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "{\"ok\":1}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "{\"ok\":2}"
+      },
+      {
+        "role": "user",
+        "content": "attachment catalog"
+      }
+    ]
+  },
+  "separate-tool-contents|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "go"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          },
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "{\"ok\":1}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "{\"ok\":2}"
+      },
+      {
+        "role": "user",
+        "content": "attachment catalog"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "separate-tool-contents|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "go"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          },
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "{\"ok\":1}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "{\"ok\":2}"
+      },
+      {
+        "role": "user",
+        "content": "attachment catalog"
+      }
+    ]
+  },
+  "separate-tool-contents|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "go"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          },
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "list_items",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "{\"ok\":1}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "{\"ok\":2}"
+      },
+      {
+        "role": "user",
+        "content": "attachment catalog"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "reasoning-content|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      },
+      {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "step 1. step 2.",
+        "reasoning_signature": "enc-sig"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "only thought"
+      },
+      {
+        "role": "user",
+        "content": "again"
+      }
+    ]
+  },
+  "reasoning-content|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      },
+      {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "step 1. step 2.",
+        "reasoning_signature": "enc-sig"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "only thought"
+      },
+      {
+        "role": "user",
+        "content": "again"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "reasoning-content|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      },
+      {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "step 1. step 2.",
+        "reasoning_signature": "enc-sig"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "only thought"
+      },
+      {
+        "role": "user",
+        "content": "again"
+      }
+    ]
+  },
+  "reasoning-content|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      },
+      {
+        "role": "assistant",
+        "content": "answer",
+        "reasoning_content": "step 1. step 2.",
+        "reasoning_signature": "enc-sig"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "only thought"
+      },
+      {
+        "role": "user",
+        "content": "again"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "user-media|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "look at this"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            }
+          },
+          {
+            "type": "file",
+            "file": {
+              "file_data": "data:application/pdf;base64,JVBERi0xLjQgdGVzdA=="
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "user-media|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "look at this"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            }
+          },
+          {
+            "type": "file",
+            "file": {
+              "file_data": "data:application/pdf;base64,JVBERi0xLjQgdGVzdA=="
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "user-media|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "look at this"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            }
+          },
+          {
+            "type": "file",
+            "file": {
+              "file_data": "data:application/pdf;base64,JVBERi0xLjQgdGVzdA=="
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "user-media|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "look at this"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            }
+          },
+          {
+            "type": "file",
+            "file": {
+              "file_data": "data:application/pdf;base64,JVBERi0xLjQgdGVzdA=="
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "tool-result-media|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "screenshot"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_s",
+            "type": "function",
+            "function": {
+              "name": "screenshot",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_s",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"ok\":true}"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "tool-result-media|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "screenshot"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_s",
+            "type": "function",
+            "function": {
+              "name": "screenshot",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_s",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"ok\":true}"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "tool-result-media|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "screenshot"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_s",
+            "type": "function",
+            "function": {
+              "name": "screenshot",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_s",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"ok\":true}"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "tool-result-media|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "screenshot"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_s",
+            "type": "function",
+            "function": {
+              "name": "screenshot",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_s",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"ok\":true}"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "thinking-none|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "reasoning_effort": "none"
+  },
+  "thinking-none|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "reasoning_effort": "none",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "thinking-none|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "thinking": {
+      "type": "disabled"
+    }
+  },
+  "thinking-none|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "thinking": {
+      "type": "disabled"
+    },
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "thinking-high|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "reasoning_effort": "high"
+  },
+  "thinking-high|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "reasoning_effort": "high",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "thinking-high|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "thinking": {
+      "type": "enabled"
+    },
+    "reasoning_effort": "high"
+  },
+  "thinking-high|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "thinking": {
+      "type": "enabled"
+    },
+    "reasoning_effort": "high",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "thinking-max|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "reasoning_effort": "max"
+  },
+  "thinking-max|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "reasoning_effort": "max",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "thinking-max|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "thinking": {
+      "type": "enabled"
+    },
+    "reasoning_effort": "max"
+  },
+  "thinking-max|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "thinking": {
+      "type": "enabled"
+    },
+    "reasoning_effort": "max",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "thinking-unset|openai-compatible|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ]
+  },
+  "thinking-unset|openai-compatible|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "thinking-unset|deepseek|nostream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ]
+  },
+  "thinking-unset|deepseek|stream": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

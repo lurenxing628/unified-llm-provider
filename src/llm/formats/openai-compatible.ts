@@ -4,7 +4,8 @@
  * Gemini ↔ OpenAI 格式的完整双向转换。
  * 适用于所有 OpenAI 兼容接口（OpenAI、DeepSeek、本地模型等）。
  *
- * 支持 reasoning_content（DeepSeek / KIMI 等模型的 thinking 字段）。
+ * 支持 reasoning_content（DeepSeek / KIMI 等模型的 thinking 字段），以及 OpenRouter 的
+ * reasoning / reasoning_details（https://openrouter.ai/docs/use-cases/reasoning-tokens）。
  */
 
 import {
@@ -44,7 +45,7 @@ export class OpenAICompatibleFormat implements FormatAdapter {
         // 提取 thinking/reasoning 内容（thought: true 的 text parts）
         const thoughtParts = content.parts.filter(p => isTextPart(p) && p.thought === true);
         const reasoningContent = thoughtParts.map(p => (p as any).text || '').join('') || null;
-        const reasoningSignature = thoughtParts.map(p => (p as any).thoughtSignatures?.['openai-compatible']).find((value: unknown) => typeof value === 'string' && value.trim()) || null;
+        const reasoningReplay = collectReasoningReplay(thoughtParts);
 
         if (funcCallParts.length > 0) {
           const toolCalls = funcCallParts.map((part, i) => {
@@ -68,8 +69,7 @@ export class OpenAICompatibleFormat implements FormatAdapter {
             return p.text;
           }).join('') || null;
           const msg: Record<string, unknown> = { role: 'assistant', content: text, tool_calls: toolCalls };
-          if (reasoningContent) msg.reasoning_content = reasoningContent;
-          if (reasoningSignature) msg.reasoning_signature = reasoningSignature;
+          applyReasoningReplay(msg, reasoningContent, reasoningReplay);
           messages.push(msg);
        } else {
           const text = textParts.map(p => {
@@ -77,8 +77,7 @@ export class OpenAICompatibleFormat implements FormatAdapter {
             return p.text;
           }).join('');
           const msg: Record<string, unknown> = { role: 'assistant', content: text };
-          if (reasoningContent) msg.reasoning_content = reasoningContent;
-          if (reasoningSignature) msg.reasoning_signature = reasoningSignature;
+          applyReasoningReplay(msg, reasoningContent, reasoningReplay);
           messages.push(msg);
         }
       } else {
@@ -200,11 +199,28 @@ export class OpenAICompatibleFormat implements FormatAdapter {
     const parts: Part[] = [];
 
     // reasoning_content → thought part（DeepSeek / KIMI 等模型的 thinking 输出）
-    if ((typeof msg.reasoning_content === 'string' && msg.reasoning_content) || typeof msg.reasoning_signature === 'string') {
+    // OpenRouter：没有 reasoning_content 时取 message.reasoning；reasoning_details 原样存进签名信封。
+    const reasoningFromReasoningField = !nonEmptyString(msg.reasoning_content) && nonEmptyString(msg.reasoning);
+    const reasoningDetails = Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0
+      ? msg.reasoning_details as unknown[]
+      : undefined;
+    const replaySignature = reasoningDetails || reasoningFromReasoningField
+      ? serializeReasoningReplay({
+          reasoning_details: reasoningDetails,
+          reasoning_signature: nonEmptyString(msg.reasoning_signature) ? msg.reasoning_signature : undefined,
+          reasoning_field: reasoningFromReasoningField ? 'reasoning' : undefined,
+        })
+      : undefined;
+    if ((typeof msg.reasoning_content === 'string' && msg.reasoning_content) || typeof msg.reasoning_signature === 'string' || replaySignature) {
+      const text = typeof msg.reasoning_content === 'string' && msg.reasoning_content
+        ? msg.reasoning_content
+        : reasoningFromReasoningField ? msg.reasoning : typeof msg.reasoning_content === 'string' ? msg.reasoning_content : '';
       const thoughtPart: Part = {
-        text: typeof msg.reasoning_content === 'string' ? msg.reasoning_content : '',
+        text,
         thought: true,
-        ...(typeof msg.reasoning_signature === 'string' ? { thoughtSignature: msg.reasoning_signature } : {}),
+        ...(replaySignature
+          ? { thoughtSignature: replaySignature }
+          : typeof msg.reasoning_signature === 'string' ? { thoughtSignature: msg.reasoning_signature } : {}),
       } as any;
       parts.push(thoughtPart);
     }
@@ -264,12 +280,26 @@ export class OpenAICompatibleFormat implements FormatAdapter {
       return createFinishReasonErrorChunk(data, choice);
     }
 
+    const reasoningState = state as OpenAICompatibleStreamState;
+
     // reasoning_content 流式增量（DeepSeek / KIMI 等模型的 thinking 输出）
     if (choice?.delta?.reasoning_content) {
       chunk.partsDelta = [
         ...(chunk.partsDelta || []),
         { text: choice.delta.reasoning_content, thought: true } as any,
       ];
+    } else if (nonEmptyString(choice?.delta?.reasoning)) {
+      // OpenRouter 的思考文本字段；同一块已有 reasoning_content 时不重复取。
+      reasoningState.reasoningField = 'reasoning';
+      chunk.partsDelta = [
+        ...(chunk.partsDelta || []),
+        { text: choice.delta.reasoning, thought: true } as any,
+      ];
+    }
+
+    // OpenRouter reasoning_details：只累积，流结束时整体作为签名信封发出（见 finalizeStream）。
+    if (Array.isArray(choice?.delta?.reasoning_details)) {
+      accumulateReasoningDetails(reasoningState.reasoningDetails, choice.delta.reasoning_details);
     }
 
     if (choice?.delta?.reasoning_signature) {
@@ -278,6 +308,9 @@ export class OpenAICompatibleFormat implements FormatAdapter {
         { thought: true, thoughtSignature: choice.delta.reasoning_signature } as any,
       ];
       chunk.thoughtSignature = choice.delta.reasoning_signature;
+      if (typeof choice.delta.reasoning_signature === 'string') {
+        reasoningState.reasoningSignature = choice.delta.reasoning_signature;
+      }
     }
 
     if (choice?.delta?.content) {
@@ -361,40 +394,57 @@ export class OpenAICompatibleFormat implements FormatAdapter {
     const state: OpenAICompatibleStreamState = {
       pendingToolCalls: new Map<number | string, PendingStreamToolCall>(),
       anonymousToolCallCount: 0,
+      reasoningDetails: [],
     };
     return state;
   }
 
   /**
-   * 流结束（[DONE] / EOF）后补发仍在等待的工具调用。
+   * 流结束（[DONE] / EOF）后补发仍在等待的内容。
    *
-   * 部分网关（实测：把 Chat Completions 转成其他协议的中转）在工具调用流里不发 finish_reason，
-   * 最后一个调用（尤其是 arguments 为空串的无参数调用）永远等不到输出信号。流已正常结束时，
-   * 空参数按 `{}` 发出；参数 JSON 不完整的调用视为被截断，返回解码错误块而不是静默丢弃。
+   * 1. 工具调用：部分网关（实测：把 Chat Completions 转成其他协议的中转）在工具调用流里不发
+   *    finish_reason，最后一个调用（尤其是 arguments 为空串的无参数调用）永远等不到输出信号。
+   *    流已正常结束时，空参数按 `{}` 发出；参数 JSON 不完整的调用视为被截断，返回解码错误块。
+   * 2. OpenRouter reasoning_details：整条流累积完成后才完整（签名、加密块常在正文或工具调用之后
+   *    才到），所以只在这里作为一个仅含签名的思考 part 发出一次，与官方 AI SDK 在 finish 时给出
+   *    完整 reasoning_details 的做法一致。
    */
   finalizeStream(state: StreamDecodeState): LLMStreamChunk | undefined {
     const streamState = state as OpenAICompatibleStreamState;
     if (streamState.terminatedWithError) return undefined;
     const pending = streamState.pendingToolCalls;
-    if (!pending || pending.size === 0) return undefined;
 
     const chunk: LLMStreamChunk = {};
-    const failures: FailedStreamToolCall[] = [];
-    for (const [, entry] of pending) {
-      const problem = emitStreamToolCall(chunk, entry, { allowEmptyArgs: true });
-      if (problem) failures.push({ entry, problem });
+    const replaySignature = streamState.reasoningDetails.length > 0 || streamState.reasoningField
+      ? serializeReasoningReplay({
+          reasoning_details: streamState.reasoningDetails.length > 0 ? streamState.reasoningDetails : undefined,
+          reasoning_signature: streamState.reasoningSignature,
+          reasoning_field: streamState.reasoningField,
+        })
+      : undefined;
+    if (replaySignature) {
+      chunk.partsDelta = [{ text: '', thought: true, thoughtSignature: replaySignature } as Part];
+      chunk.thoughtSignature = replaySignature;
     }
-    pending.clear();
-    streamState.lastToolCallKey = undefined;
-    if (failures.length > 0) {
-      return createToolArgumentsErrorChunk(failures, undefined, {
-        tool_calls: failures.map(({ entry }) => ({
-          id: entry.callId,
-          function: { name: entry.name, arguments: entry.arguments },
-        })),
-      });
+
+    if (pending.size > 0) {
+      const failures: FailedStreamToolCall[] = [];
+      for (const [, entry] of pending) {
+        const problem = emitStreamToolCall(chunk, entry, { allowEmptyArgs: true });
+        if (problem) failures.push({ entry, problem });
+      }
+      pending.clear();
+      streamState.lastToolCallKey = undefined;
+      if (failures.length > 0) {
+        return createToolArgumentsErrorChunk(failures, undefined, {
+          tool_calls: failures.map(({ entry }) => ({
+            id: entry.callId,
+            function: { name: entry.name, arguments: entry.arguments },
+          })),
+        });
+      }
     }
-    return chunk.functionCalls?.length ? chunk : undefined;
+    return chunk.partsDelta?.length ? chunk : undefined;
   }
 }
 
@@ -414,6 +464,12 @@ interface OpenAICompatibleStreamState extends StreamDecodeState {
   anonymousToolCallCount: number;
   /** 已收到 finish_reason:"error"。 */
   terminatedWithError?: boolean;
+  /** 按 OpenRouter 规则累积的 reasoning_details。 */
+  reasoningDetails: Record<string, unknown>[];
+  /** 思考文本来自 `reasoning` 字段（而不是 reasoning_content）。 */
+  reasoningField?: 'reasoning';
+  /** 最近一次 delta.reasoning_signature，与 reasoning_details 一起放进签名信封。 */
+  reasoningSignature?: string;
 }
 
 type StreamToolArgumentsProblem = 'incomplete' | 'not_object';
@@ -546,6 +602,134 @@ function createToolArgumentsErrorChunk(
     rawChunk,
     ...(finishReason ? { finishReason } : {}),
   };
+}
+
+// ============ OpenRouter reasoning / reasoning_details ============
+
+/**
+ * 放在思考 part 的 `thoughtSignatures['openai-compatible']` 里的回放信封（JSON 对象字符串）。
+ *
+ * 扩展侧每个 part 只保存一个便携签名 `openai-compatible:<value>`，因此把回放所需的全部状态
+ * 编成一个 JSON 对象：
+ *   - reasoning_details：OpenRouter 返回的 reasoning_details，原样保存、原样回放
+ *     （文档：“Pass back unmodified”；Gemini 3 的思考签名就在其中的 reasoning.encrypted 里）；
+ *   - reasoning_signature：同一响应里若还带了旧的 reasoning_signature，一并保留；
+ *   - reasoning_field："reasoning" 表示思考文本来自 `reasoning` 字段而不是 reasoning_content。
+ * 纯字符串签名（不是这种 JSON 对象）仍按 reasoning_signature 处理，行为不变。
+ */
+interface ReasoningReplay {
+  reasoning_details?: unknown[];
+  reasoning_signature?: string;
+  reasoning_field?: 'reasoning';
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function serializeReasoningReplay(replay: ReasoningReplay): string {
+  const envelope: Record<string, unknown> = {};
+  if (replay.reasoning_details) envelope.reasoning_details = replay.reasoning_details;
+  if (replay.reasoning_signature) envelope.reasoning_signature = replay.reasoning_signature;
+  if (replay.reasoning_field) envelope.reasoning_field = replay.reasoning_field;
+  return JSON.stringify(envelope);
+}
+
+function parseReasoningReplay(value: string): ReasoningReplay | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{')) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const envelope = parsed as Record<string, unknown>;
+  const details = Array.isArray(envelope.reasoning_details) ? envelope.reasoning_details : undefined;
+  const field = envelope.reasoning_field === 'reasoning' ? 'reasoning' as const : undefined;
+  if (!details && !field) return undefined;
+  return {
+    ...(details ? { reasoning_details: details } : {}),
+    ...(nonEmptyString(envelope.reasoning_signature) ? { reasoning_signature: envelope.reasoning_signature } : {}),
+    ...(field ? { reasoning_field: field } : {}),
+  };
+}
+
+/** 从一条 model 内容的思考 parts 里取回放状态：第一个信封 + 第一个纯字符串签名。 */
+function collectReasoningReplay(thoughtParts: Part[]): { replay?: ReasoningReplay; signature?: string } {
+  let replay: ReasoningReplay | undefined;
+  let signature: string | undefined;
+  for (const part of thoughtParts) {
+    const value = (part as any).thoughtSignatures?.['openai-compatible'];
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const parsed = parseReasoningReplay(value);
+    if (parsed) replay ??= parsed;
+    else signature ??= value;
+  }
+  return { replay, signature };
+}
+
+/**
+ * 把思考文本与回放状态写回 assistant 消息。
+ *
+ * 没有信封时与修复前完全一致：reasoning_content + reasoning_signature。
+ * 有 reasoning_details 时原样放回 `reasoning_details`（OpenRouter 文档 “Preserving reasoning”）。
+ * 思考文本来自 `reasoning` 字段时：有 reasoning_details 就用 `reasoning` 回传文本（与 OpenRouter
+ * 官方 AI SDK 一致）；没有 reasoning_details 时不回传文本——这些接口（如 vLLM / Groq）的思考
+ * 不需要回放，修复前也从未发送过，避免向不认识 reasoning_content 的接口发送未知字段。
+ */
+function applyReasoningReplay(
+  msg: Record<string, unknown>,
+  reasoningText: string | null,
+  state: { replay?: ReasoningReplay; signature?: string },
+): void {
+  const { replay } = state;
+  if (replay?.reasoning_field === 'reasoning') {
+    if (reasoningText && replay.reasoning_details) msg.reasoning = reasoningText;
+  } else if (reasoningText) {
+    msg.reasoning_content = reasoningText;
+  }
+  const signature = replay?.reasoning_signature ?? state.signature;
+  if (signature) msg.reasoning_signature = signature;
+  if (replay?.reasoning_details) msg.reasoning_details = replay.reasoning_details;
+}
+
+const REASONING_TEXT = 'reasoning.text';
+const REASONING_SUMMARY = 'reasoning.summary';
+
+/**
+ * 流式 reasoning_details 累积。
+ *
+ * OpenRouter 文档只说明“The complete reasoning sequence is built by concatenating all chunks in
+ * order”。具体规则取自 OpenRouter 官方 AI SDK provider（github.com/OpenRouterTeam/ai-sdk-provider，
+ * src/chat/index.ts，commit 1b22b05）：相邻的同类型 reasoning.text 合并（text 拼接，signature /
+ * format 取先到的非空值），相邻的 reasoning.summary 合并（summary 拼接），reasoning.encrypted
+ * 等其他类型是独立的不透明块，原样追加、从不合并。
+ * 另外按文档里 index 的含义（“Sequential index of the reasoning detail”）：两个块都带数字 index
+ * 且不同时视为不同的块，不合并；SDK 测试里同一块的增量总是同一个 index，结果与 SDK 一致。
+ */
+function accumulateReasoningDetails(target: Record<string, unknown>[], incoming: unknown[]): void {
+  for (const raw of incoming) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const detail = raw as Record<string, unknown>;
+    const last = target[target.length - 1];
+    const mergeable = last !== undefined
+      && last.type === detail.type
+      && (detail.type === REASONING_TEXT || detail.type === REASONING_SUMMARY)
+      && (typeof last.index !== 'number' || typeof detail.index !== 'number' || last.index === detail.index);
+    if (!mergeable) {
+      target.push({ ...detail });
+      continue;
+    }
+    if (detail.type === REASONING_TEXT) {
+      last.text = String(last.text || '') + String(detail.text || '');
+      last.signature = last.signature || detail.signature;
+    } else {
+      last.summary = String(last.summary || '') + String(detail.summary || '');
+    }
+    last.format = last.format || detail.format;
+  }
 }
 
 // ============ finish_reason: "error" ============

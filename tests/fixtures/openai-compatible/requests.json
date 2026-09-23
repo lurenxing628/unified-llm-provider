@@ -1,0 +1,520 @@
+{
+  "plain-chat": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are helpful."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "hello"
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "text": "hi there"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "weather?"
+          },
+          {
+            "text": " in Paris"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "options": {
+                  "type": "object",
+                  "properties": {
+                    "detailed": {
+                      "type": "boolean"
+                    },
+                    "days": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "definitions": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "list_items",
+            "description": "List items.",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "temperature": 0.2,
+      "topP": 0.9,
+      "maxOutputTokens": 256,
+      "stopSequences": [
+        "END"
+      ],
+      "thinkingConfig": {
+        "thinkingLevel": "medium"
+      }
+    }
+  },
+  "tool-roundtrip": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "weather in Paris and Tokyo, then list"
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "text": "thinking about it",
+            "thought": true,
+            "thoughtSignatures": {
+              "openai-compatible": "sig-plain-1"
+            }
+          },
+          {
+            "text": "Let me check."
+          },
+          {
+            "functionCall": {
+              "name": "get_weather",
+              "args": {
+                "city": "Paris"
+              },
+              "callId": "call_a"
+            }
+          },
+          {
+            "functionCall": {
+              "name": "get_weather",
+              "args": {
+                "city": "Tokyo"
+              },
+              "callId": "call_b"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "get_weather",
+              "response": {
+                "temp": "18C"
+              },
+              "callId": "call_a"
+            }
+          },
+          {
+            "functionResponse": {
+              "name": "get_weather",
+              "response": {
+                "temp": "25C"
+              },
+              "callId": "call_b"
+            }
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "list_items",
+              "args": {},
+              "callId": "call_c"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "list_items",
+              "response": {
+                "items": []
+              },
+              "callId": "call_c"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "thanks"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "options": {
+                  "type": "object",
+                  "properties": {
+                    "detailed": {
+                      "type": "boolean"
+                    },
+                    "days": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "definitions": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "list_items",
+            "description": "List items.",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "separate-tool-contents": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "go"
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "list_items",
+              "args": {},
+              "callId": "call_1"
+            }
+          },
+          {
+            "functionCall": {
+              "name": "list_items",
+              "args": {},
+              "callId": "call_2"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "list_items",
+              "response": {
+                "ok": 1
+              },
+              "callId": "call_1"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "list_items",
+              "response": {
+                "ok": 2
+              },
+              "callId": "call_2"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "attachment catalog"
+          }
+        ]
+      }
+    ]
+  },
+  "reasoning-content": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "q"
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "text": "step 1. ",
+            "thought": true
+          },
+          {
+            "text": "step 2.",
+            "thought": true,
+            "thoughtSignatures": {
+              "openai-compatible": "enc-sig"
+            }
+          },
+          {
+            "text": "answer"
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "text": "only thought",
+            "thought": true
+          },
+          {
+            "text": ""
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "again"
+          }
+        ]
+      }
+    ]
+  },
+  "user-media": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "look at this"
+          },
+          {
+            "inlineData": {
+              "mimeType": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+              "name": "a.png"
+            }
+          },
+          {
+            "inlineData": {
+              "mimeType": "application/pdf",
+              "data": "JVBERi0xLjQgdGVzdA=="
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "tool-result-media": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "screenshot"
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "screenshot",
+              "args": {},
+              "callId": "call_s"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "screenshot",
+              "response": {
+                "ok": true
+              },
+              "callId": "call_s",
+              "parts": [
+                {
+                  "inlineData": {
+                    "mimeType": "image/png",
+                    "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "thinking-none": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "q"
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "thinkingConfig": {
+        "thinkingLevel": "none"
+      }
+    }
+  },
+  "thinking-high": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "q"
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "thinkingConfig": {
+        "thinkingLevel": "high"
+      }
+    }
+  },
+  "thinking-max": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "q"
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "thinkingConfig": {
+        "thinkingLevel": "max"
+      }
+    }
+  },
+  "thinking-unset": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "q"
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "thinkingConfig": {
+        "thinkingLevel": "not-set"
+      }
+    }
+  }
+}
