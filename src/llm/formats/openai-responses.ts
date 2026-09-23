@@ -8,6 +8,7 @@
 
 import {
   LLMRequest, LLMResponse, LLMStreamChunk, LLMCompactResponse, Part, Content, FunctionCallPart, FunctionResponsePart, ProviderContextItem,
+  LimcodeOutputItemReference,
   isVisibleTextPart, isInlineDataPart, isFunctionCallPart, isFunctionResponsePart, isTextPart, isProviderContextPart,
 } from '../../types.js';
 import type { LLMPromptCacheConfig, LLMPromptCacheMode } from '../../config/types.js';
@@ -42,6 +43,29 @@ function attachLimcodeOutputItem(chunk: LLMStreamChunk, data: any): void {
   const id = normalizeCallId(data?.item_id) ?? normalizeCallId(data?.item?.id) ?? normalizeCallId(data?.id) ?? `output:${ordinal}`;
   const phase = data?.item?.phase === 'commentary' || data?.item?.phase === 'final_answer' ? data.item.phase : undefined;
   chunk.outputItem = { id, ordinal, ...(phase ? { phase } : {}) };
+}
+
+type AssistantMessagePhase = NonNullable<LimcodeOutputItemReference['phase']>;
+
+function readAssistantMessagePhase(value: unknown): AssistantMessagePhase | undefined {
+  return value === 'commentary' || value === 'final_answer' ? value : undefined;
+}
+
+function readOutputOrdinal(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * B6：服务端给 assistant message 带了 phase 时（不限 Astra），生成 output item 引用把 phase 带出去，
+ * 调用方据此把同一 message 的文本按原 item 分组并带 phase 回放。没有 phase 的 message 返回 undefined，
+ * 解码结果与修复前完全一致。依据：https://developers.openai.com/api/docs/guides/reasoning#phase-parameter
+ * （“If you replay assistant history manually, preserve each original phase value.”）。
+ */
+function createAssistantPhaseOutputItem(item: any, ordinal: number): LimcodeOutputItemReference | undefined {
+  if (item?.type !== 'message' || item.role === 'user') return undefined;
+  const phase = readAssistantMessagePhase(item.phase);
+  if (!phase) return undefined;
+  return { id: normalizeCallId(item.id) ?? `output:${ordinal}`, ordinal, phase };
 }
 
 export class OpenAIResponsesFormat implements CompactFormatAdapter {
@@ -86,6 +110,9 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
 
       if (content.role === 'model') {
         let currentMessageItem: any = null;
+        // B6：带 phase 的文本按 outputItem.id 拆成各自的 assistant message，并回放 phase；
+        // 没有 phase 的文本 key 为 undefined，连续文本仍合并成一条 message（与修复前一致）。
+        let currentMessageKey: string | undefined;
 
         for (const part of content.parts) {
           if (isProviderContextPart(part)) {
@@ -112,8 +139,11 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
             inputItems.push(reasoningItem);
             currentMessageItem = null;
           } else if (isVisibleTextPart(part) && part.text) {
-            if (!currentMessageItem) {
-              currentMessageItem = { type: 'message', role: 'assistant', content: [] };
+            const phase = readAssistantMessagePhase(part.outputItem?.phase);
+            const messageKey = phase ? part.outputItem?.id : undefined;
+            if (!currentMessageItem || currentMessageKey !== messageKey) {
+              currentMessageItem = { type: 'message', role: 'assistant', ...(phase ? { phase } : {}), content: [] };
+              currentMessageKey = messageKey;
               inputItems.push(currentMessageItem);
             }
             currentMessageItem.content.push({ type: 'output_text', text: part.text });
@@ -327,14 +357,18 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
     }
 
     const parts: Part[] = [];
-    for (const item of data.output) {
+    const output: any[] = data.output;
+    for (let index = 0; index < output.length; index++) {
+      const item = output[index];
       if (item.type === 'reasoning') {
         const part = createReasoningPart(item, { includeText: true, includeSignature: true });
         if (part) parts.push(part);
       } else if (item.type === 'message') {
+        // B6：非 Astra 模型的 assistant message 带 phase 时，文本 part 附带 outputItem（Astra 保持原样）。
+        const outputItem = isLimcodeAstraModel(this.model) ? undefined : createAssistantPhaseOutputItem(item, index);
         for (const block of item.content ?? []) {
           if (block.type === 'output_text') {
-            parts.push({ text: block.text });
+            parts.push(outputItem ? { text: block.text, outputItem: { ...outputItem } } : { text: block.text });
           }
         }
       } else if (item.type === 'function_call') {
@@ -366,6 +400,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         chunk.partsDelta = [{ text: data.delta }];
       }
       if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
+      else if (!isLimcodeAstraModel(this.model)) attachAssistantPhaseOutputItem(chunk, streamState, data);
     } else if (event === 'response.created') {
       // LimCode Astra HTTP/SSE：response 生命周期观察（无 WS 物理身份）。
       if (this.limcodeAstraNative) {
@@ -399,6 +434,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       }
     } else if (event === 'response.output_item.added') {
       if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
+      else if (!isLimcodeAstraModel(this.model)) rememberAssistantMessagePhase(streamState, data);
       const item = data.item;
       if (item?.type === 'reasoning') {
         // Responses API 的 reasoning item 在 added 阶段通常只有空 summary；
@@ -436,6 +472,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       if (itemKey) emitFunctionCallChunk(chunk, itemKey, streamState, data);
     } else if (event === 'response.output_item.done') {
       if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
+      else if (!isLimcodeAstraModel(this.model)) rememberAssistantMessagePhase(streamState, data);
       const item = data.item;
       if (item?.type === 'reasoning') {
         // 如果前面没有 reasoning_summary_text.delta，done 里的完整 summary 是最后兜底，
@@ -512,6 +549,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       pendingFunctionCalls: new Map<string, PendingOpenAIResponsesFunctionCall>(),
       reasoningTextByKey: new Map<string, string>(),
       emittedReasoningSignatures: new Set<string>(),
+      assistantMessagePhases: new Map<string, LimcodeOutputItemReference>(),
     } as OpenAIResponsesStreamState;
   }
 }
@@ -521,6 +559,30 @@ interface OpenAIResponsesStreamState extends StreamDecodeState {
   pendingFunctionCalls: Map<string, PendingOpenAIResponsesFunctionCall>;
   reasoningTextByKey: Map<string, string>;
   emittedReasoningSignatures: Set<string>;
+  /** B6：带 phase 的 assistant message，按 item id 与 `output:<output_index>` 两个键登记。 */
+  assistantMessagePhases: Map<string, LimcodeOutputItemReference>;
+}
+
+/** B6：output_item.added / done 里带 phase 的 assistant message 登记下来，供后续 output_text.delta 使用。 */
+function rememberAssistantMessagePhase(state: OpenAIResponsesStreamState, data: any): void {
+  const ordinal = readOutputOrdinal(data?.output_index);
+  if (ordinal === undefined) return;
+  const reference = createAssistantPhaseOutputItem(data?.item, ordinal);
+  if (!reference) return;
+  state.assistantMessagePhases.set(reference.id, reference);
+  state.assistantMessagePhases.set(`output:${ordinal}`, reference);
+}
+
+/**
+ * B6：非 Astra 模型的 output_text.delta 属于带 phase 的 message 时，在 chunk 上附带 outputItem
+ * （形状与 Astra 原生解码的 chunk.outputItem 相同）。未登记 phase 的 message 不附加，chunk 与修复前一致。
+ */
+function attachAssistantPhaseOutputItem(chunk: LLMStreamChunk, state: OpenAIResponsesStreamState, data: any): void {
+  const itemId = normalizeCallId(data?.item_id);
+  const ordinal = readOutputOrdinal(data?.output_index);
+  const reference = (itemId ? state.assistantMessagePhases.get(itemId) : undefined)
+    ?? (ordinal !== undefined ? state.assistantMessagePhases.get(`output:${ordinal}`) : undefined);
+  if (reference) chunk.outputItem = { ...reference };
 }
 
 interface PendingOpenAIResponsesFunctionCall {

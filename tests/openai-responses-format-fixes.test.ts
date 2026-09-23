@@ -1352,3 +1352,119 @@ describe('B5 explicit 缓存断点放到最后一个可承载块，不再追加�
     expect(body.prompt_cache_options).toEqual({ mode: 'explicit', ttl: '30m' });
   });
 });
+
+describe('B6 非 Astra 模型的 assistant message phase 保留在 outputItem 上', () => {
+  // 依据：https://developers.openai.com/api/docs/guides/reasoning#phase-parameter
+  // “If you replay assistant history manually, preserve each original phase value.
+  //  Missing or dropped phase can cause preambles to be treated as final answers.”
+  const TWO_MESSAGES = [
+    reasoning('rs_1', 'plan'),
+    msg('pre', 'Let me check first.', 'commentary'),
+    fcall('1', 'read_file', { path: 'a' }),
+    msg('fin', 'All done.', 'final_answer'),
+  ];
+
+  it('流式：output_item.added 带 phase 时，该 message 的 output_text.delta 附带 {id, ordinal, phase}', () => {
+    const chunks = decodeAll(new OpenAIResponsesFormat('gpt-5.5', undefined, true), sseEvents('resp_1', TWO_MESSAGES));
+    const textChunks = chunks.filter(chunk => chunk.textDelta);
+    expect(textChunks.map(chunk => [chunk.textDelta, chunk.outputItem])).toEqual([
+      ['Let', { id: 'msg_pre', ordinal: 1, phase: 'commentary' }],
+      [' me check first.', { id: 'msg_pre', ordinal: 1, phase: 'commentary' }],
+      ['All', { id: 'msg_fin', ordinal: 3, phase: 'final_answer' }],
+      [' done.', { id: 'msg_fin', ordinal: 3, phase: 'final_answer' }],
+    ]);
+    // 只有文本 delta 附带 outputItem；reasoning / 工具调用 / 生命周期事件不变。
+    expect(chunks.filter(chunk => chunk.outputItem)).toHaveLength(4);
+  });
+
+  it('流式：带 phase 与不带 phase 的同一输出，除文本 delta 的 outputItem 外逐字节相同', () => {
+    const withPhase = decodeAll(new OpenAIResponsesFormat('gpt-5.5', undefined, true), sseEvents('resp_1', PHASE_OUTPUT))
+      .map(({ outputItem: _outputItem, ...rest }) => rest);
+    expect(JSON.stringify(withPhase)).toBe(JSON.stringify(BASELINE_STREAM_NO_PHASE));
+  });
+
+  it('流式：delta 缺 item_id 时按 output_index 找到 phase', () => {
+    const format = new OpenAIResponsesFormat('gpt-5.5');
+    const state = format.createStreamState();
+    format.decodeStreamChunk({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_x', role: 'assistant', phase: 'final_answer', content: [] } }, state);
+    const chunk = format.decodeStreamChunk({ type: 'response.output_text.delta', output_index: 0, delta: 'hi' }, state);
+    expect(chunk.outputItem).toEqual({ id: 'msg_x', ordinal: 0, phase: 'final_answer' });
+  });
+
+  it('非法 phase 值（null / 未知字符串）视为没有 phase', () => {
+    for (const phase of [null, 'analysis', '']) {
+      const format = new OpenAIResponsesFormat('gpt-5.5');
+      const state = format.createStreamState();
+      format.decodeStreamChunk({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_x', role: 'assistant', phase, content: [] } }, state);
+      const chunk = format.decodeStreamChunk({ type: 'response.output_text.delta', item_id: 'msg_x', output_index: 0, delta: 'hi' }, state);
+      expect(chunk).toEqual({ textDelta: 'hi', partsDelta: [{ text: 'hi' }] });
+    }
+  });
+
+  it('outputItem 形状满足 LimCode 扩展 modelOutputItemFromValue 的要求（非空 id、非负安全整数 ordinal）', () => {
+    const chunks = decodeAll(new OpenAIResponsesFormat('gpt-5.5', undefined, true), sseEvents('resp_1', PHASE_OUTPUT));
+    for (const { outputItem } of chunks.filter(chunk => chunk.outputItem)) {
+      expect(typeof outputItem.id === 'string' && outputItem.id.trim().length > 0).toBe(true);
+      expect(Number.isSafeInteger(outputItem.ordinal) && outputItem.ordinal >= 0).toBe(true);
+      expect(['commentary', 'final_answer']).toContain(outputItem.phase);
+    }
+  });
+
+  it('非流式：带 phase 的 message 文本 part 附带 outputItem，其余 part 不变', () => {
+    const decoded = new OpenAIResponsesFormat('gpt-5.5', undefined, true).decodeResponse(structuredClone({ id: 'resp_1', output: TWO_MESSAGES }));
+    expect(decoded.content.parts).toEqual([
+      { text: 'plan', thought: true, thoughtSignatures: { 'openai-responses': 'gAAAAB_ENC_rs_1' } },
+      { text: 'Let me check first.', outputItem: { id: 'msg_pre', ordinal: 1, phase: 'commentary' } },
+      { functionCall: { name: 'read_file', args: { path: 'a' }, callId: 'call_1' } },
+      { text: 'All done.', outputItem: { id: 'msg_fin', ordinal: 3, phase: 'final_answer' } },
+    ]);
+  });
+
+  it('编码：带 phase 的文本按 outputItem 拆成各自的 assistant message 并回放 phase', () => {
+    const decoded = new OpenAIResponsesFormat('gpt-5.5').decodeResponse(structuredClone({ id: 'resp_1', output: TWO_MESSAGES }));
+    const body = new OpenAIResponsesFormat('gpt-5.5').encodeRequest({
+      contents: [
+        { role: 'user', parts: [{ text: 'go' }] },
+        decoded.content,
+        { role: 'user', parts: [{ functionResponse: { name: 'read_file', response: { ok: 1 }, callId: 'call_1' } }] },
+      ],
+    }) as any;
+    expect(body.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+      { type: 'reasoning', summary: [{ type: 'summary_text', text: 'plan' }], encrypted_content: 'gAAAAB_ENC_rs_1' },
+      { type: 'message', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text: 'Let me check first.' }] },
+      { type: 'function_call', call_id: 'call_1', name: 'read_file', arguments: '{"path":"a"}' },
+      { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'All done.' }] },
+      { type: 'function_call_output', call_id: 'call_1', output: '{"ok":1}' },
+    ]);
+  });
+
+  it('编码：相邻两条不同 phase 的 message 不会被合并；无 phase 的连续文本仍合并为一条', () => {
+    const body = new OpenAIResponsesFormat('gpt-5.5').encodeRequest({
+      contents: [
+        { role: 'user', parts: [{ text: 'go' }] },
+        { role: 'model', parts: [
+          { text: 'a', outputItem: { id: 'msg_a', ordinal: 0, phase: 'commentary' } },
+          { text: 'b', outputItem: { id: 'msg_b', ordinal: 1, phase: 'final_answer' } },
+          { text: 'c' },
+          { text: 'd' },
+        ] },
+      ],
+    }) as any;
+    expect(body.input.slice(1)).toEqual([
+      { type: 'message', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text: 'a' }] },
+      { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'b' }] },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'c' }, { type: 'output_text', text: 'd' }] },
+    ]);
+  });
+
+  it('只有 output_item.done 带 phase 时，已发出的文本 delta 不附加（与修复前一致）', () => {
+    const format = new OpenAIResponsesFormat('gpt-5.5');
+    const state = format.createStreamState();
+    format.decodeStreamChunk({ type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'msg_x', role: 'assistant', content: [] } }, state);
+    const delta = format.decodeStreamChunk({ type: 'response.output_text.delta', item_id: 'msg_x', output_index: 0, delta: 'hi' }, state);
+    const done = format.decodeStreamChunk({ type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'msg_x', role: 'assistant', phase: 'final_answer', content: [] } }, state);
+    expect(delta).toEqual({ textDelta: 'hi', partsDelta: [{ text: 'hi' }] });
+    expect(done).toEqual({});
+  });
+});
