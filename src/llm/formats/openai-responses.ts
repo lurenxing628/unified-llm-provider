@@ -28,11 +28,13 @@ interface NormalizedOpenAIResponsesPromptCacheConfig {
   };
 }
 
-/** LimCode Astra：精确模型族（含 dated 快照），绝不外推到其他 gpt-* 模型。 */
-function isLimcodeAstraModel(model: string): boolean {
-  const normalized = model.trim().toLowerCase();
-  return normalized === 'gpt-6-astra' || /^gpt-6-astra-\d{4}-\d{2}-\d{2}$/.test(normalized);
-}
+/**
+ * LimCode GPT-6 家族：只认官方精确 id `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna` 及其日期快照
+ * （-YYYY-MM-DD），绝不从网关别名（如 `gpt-6-sol-xhigh`）或其他 gpt-* 名称推断。
+ * 依据：https://developers.openai.com/api/docs/guides/latest-model（Using GPT-6：“The GPT-6 model family
+ * includes GPT-6 Astra, GPT-6 Sol, and GPT-6 Luna”）。LimCode 原生能力对这三个模型开放，它们走同一条原生解码路径。
+ */
+const LIMCODE_GPT6_FAMILY_MODELS: ReadonlySet<string> = new Set(['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']);
 
 /**
  * 显式提示缓存（`prompt_cache_options` / `prompt_cache_breakpoint`）只支持 “GPT-5.6 and later”。
@@ -46,6 +48,10 @@ const LIMCODE_EXPLICIT_PROMPT_CACHE_MODELS: ReadonlySet<string> = new Set([
 
 function officialModelBaseId(model: string): string {
   return model.trim().toLowerCase().replace(/-\d{4}-\d{2}-\d{2}$/, '');
+}
+
+function isLimcodeGpt6FamilyModel(model: string): boolean {
+  return LIMCODE_GPT6_FAMILY_MODELS.has(officialModelBaseId(model));
 }
 
 function supportsLimcodeExplicitPromptCache(model: string): boolean {
@@ -90,7 +96,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
   private readonly promptCache: NormalizedOpenAIResponsesPromptCacheConfig;
 
   /**
-   * limcodeNativeEvents：仅 LimCode HTTP/SSE 原生路径开启。开启且模型为精确 Astra 时，
+   * limcodeNativeEvents：仅 LimCode HTTP/SSE 原生路径开启。开启且模型属于 GPT-6 家族（精确 id）时，
    * 解码在 chunk 上附加 nativeEvent/completedContents（无 WS 物理身份）。LimCode 自带的
    * WebSocket 会话直接构造本类且不开启此模式，WS 上的权威 nativeEvent 由会话自身产出。
    */
@@ -98,8 +104,8 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
     this.promptCache = normalizeOpenAIResponsesPromptCacheConfig(promptCache);
   }
 
-  private get limcodeAstraNative(): boolean {
-    return this.limcodeNativeEvents && isLimcodeAstraModel(this.model);
+  private get limcodeGpt6Native(): boolean {
+    return this.limcodeNativeEvents && isLimcodeGpt6FamilyModel(this.model);
   }
 
   // ============ 编码请求：Gemini (Internal) → OpenAI Responses ============
@@ -385,8 +391,9 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         const part = createReasoningPart(item, { includeText: true, includeSignature: true });
         if (part) parts.push(part);
       } else if (item.type === 'message') {
-        // B6：非 Astra 模型的 assistant message 带 phase 时，文本 part 附带 outputItem（Astra 保持原样）。
-        const outputItem = isLimcodeAstraModel(this.model) ? undefined : createAssistantPhaseOutputItem(item, index);
+        // B6：GPT-6 家族以外的模型的 assistant message 带 phase 时，文本 part 附带 outputItem
+        // （GPT-6 家族与 Astra 原生路径保持一致，不附加）。
+        const outputItem = isLimcodeGpt6FamilyModel(this.model) ? undefined : createAssistantPhaseOutputItem(item, index);
         for (const block of item.content ?? []) {
           if (block.type === 'output_text') {
             parts.push(outputItem ? { text: block.text, outputItem: { ...outputItem } } : { text: block.text });
@@ -421,11 +428,11 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         chunk.textDelta = data.delta;
         chunk.partsDelta = [{ text: data.delta }];
       }
-      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
-      else if (!isLimcodeAstraModel(this.model)) attachAssistantPhaseOutputItem(chunk, streamState, data);
+      if (this.limcodeGpt6Native) attachLimcodeOutputItem(chunk, data);
+      else if (!isLimcodeGpt6FamilyModel(this.model)) attachAssistantPhaseOutputItem(chunk, streamState, data);
     } else if (event === 'response.created') {
-      // LimCode Astra HTTP/SSE：response 生命周期观察（无 WS 物理身份）。
-      if (this.limcodeAstraNative) {
+      // LimCode GPT-6 家族 HTTP/SSE：response 生命周期观察（无 WS 物理身份）。
+      if (this.limcodeGpt6Native) {
         const response = data.response ?? data;
         const responseId = response?.id;
         if (typeof responseId === 'string' && responseId) {
@@ -439,7 +446,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         }
       }
     } else if (event === 'response.incomplete') {
-      if (this.limcodeAstraNative) {
+      if (this.limcodeGpt6Native) {
         const response = data.response ?? data;
         const responseId = response?.id;
         if (typeof responseId === 'string' && responseId) {
@@ -455,8 +462,8 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         }
       }
     } else if (event === 'response.output_item.added') {
-      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
-      else if (!isLimcodeAstraModel(this.model)) rememberAssistantMessagePhase(streamState, data);
+      if (this.limcodeGpt6Native) attachLimcodeOutputItem(chunk, data);
+      else if (!isLimcodeGpt6FamilyModel(this.model)) rememberAssistantMessagePhase(streamState, data);
       const item = data.item;
       if (item?.type === 'reasoning') {
         // Responses API 的 reasoning item 在 added 阶段通常只有空 summary；
@@ -467,16 +474,16 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         rememberPendingFunctionCall(streamState, item, data);
       }
     } else if (isReasoningTextDeltaEvent(event)) {
-      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
+      if (this.limcodeGpt6Native) attachLimcodeOutputItem(chunk, data);
       emitReasoningDeltaText(chunk, streamState, data, data.delta);
     } else if (isReasoningTextDoneEvent(event)) {
-      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
+      if (this.limcodeGpt6Native) attachLimcodeOutputItem(chunk, data);
       emitReasoningFullText(chunk, streamState, data, data.text ?? data.content ?? data.summary_text);
     } else if (isReasoningSummaryPartEvent(event)) {
-      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
+      if (this.limcodeGpt6Native) attachLimcodeOutputItem(chunk, data);
       emitReasoningFullText(chunk, streamState, data, extractReasoningSummaryPartText(data.part ?? data.summary_part ?? data.content_part ?? data));
     } else if (event === 'response.function_call_arguments.delta') {
-      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
+      if (this.limcodeGpt6Native) attachLimcodeOutputItem(chunk, data);
       appendPendingFunctionCallArguments(
         streamState,
         data.item_id ?? data.id ?? data.call_id,
@@ -484,7 +491,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         data,
       );
     } else if (event === 'response.function_call_arguments.done') {
-      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
+      if (this.limcodeGpt6Native) attachLimcodeOutputItem(chunk, data);
       const itemKey = rememberPendingFunctionCall(streamState, {
         id: data.item_id ?? data.id,
         call_id: data.call_id,
@@ -493,8 +500,8 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
       }, data);
       if (itemKey) emitFunctionCallChunk(chunk, itemKey, streamState, data);
     } else if (event === 'response.output_item.done') {
-      if (this.limcodeAstraNative) attachLimcodeOutputItem(chunk, data);
-      else if (!isLimcodeAstraModel(this.model)) rememberAssistantMessagePhase(streamState, data);
+      if (this.limcodeGpt6Native) attachLimcodeOutputItem(chunk, data);
+      else if (!isLimcodeGpt6FamilyModel(this.model)) rememberAssistantMessagePhase(streamState, data);
       const item = data.item;
       if (item?.type === 'reasoning') {
         // 如果前面没有 reasoning_summary_text.delta，done 里的完整 summary 是最后兜底，
@@ -510,7 +517,7 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
     } else if (event === 'response.completed') {
       const usage = data.usage ?? data.response?.usage;
       if (usage) chunk.usageMetadata = mapOpenAIResponsesUsage(usage);
-      if (this.limcodeAstraNative) {
+      if (this.limcodeGpt6Native) {
         const response = data.response ?? data;
         const responseId = response?.id;
         if (typeof responseId === 'string' && responseId) {
@@ -621,8 +628,8 @@ function rememberAssistantMessagePhase(state: OpenAIResponsesStreamState, data: 
 }
 
 /**
- * B6：非 Astra 模型的 output_text.delta 属于带 phase 的 message 时，在 chunk 上附带 outputItem
- * （形状与 Astra 原生解码的 chunk.outputItem 相同）。未登记 phase 的 message 不附加，chunk 与修复前一致。
+ * B6：GPT-6 家族以外的模型的 output_text.delta 属于带 phase 的 message 时，在 chunk 上附带 outputItem
+ * （形状与 GPT-6 家族原生解码的 chunk.outputItem 相同）。未登记 phase 的 message 不附加，chunk 与修复前一致。
  */
 function attachAssistantPhaseOutputItem(chunk: LLMStreamChunk, state: OpenAIResponsesStreamState, data: any): void {
   const itemId = normalizeCallId(data?.item_id);

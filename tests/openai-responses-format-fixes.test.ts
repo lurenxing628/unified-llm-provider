@@ -1611,3 +1611,38 @@ describe('GPT-5.6 及之后的显式缓存：instructions 转为带断点的 dev
     expect(JSON.stringify(key)).toBe(JSON.stringify({ ...BASELINE_KEY_MODE_BODY, model: 'gpt-6-luna' }));
   });
 });
+
+describe('GPT-6 Sol / Luna 与 Astra 走同一条原生解码路径', () => {
+  // 依据：https://developers.openai.com/api/docs/guides/latest-model（Using GPT-6：GPT-6 家族包括 Astra、Sol、Luna，
+  // 异步工具 / 转向 / configuration_update 是家族新特性）。LimCode 扩展对三个模型开放原生能力，
+  // 它们的 HTTP/SSE 原生事件与 Astra 相同；WS 构造方式（无原生事件）也与 Astra 相同，不附加 B6 outputItem。
+  const FAMILY = ['gpt-6-sol', 'gpt-6-luna', 'gpt-6-sol-2026-05-01', 'gpt-6-luna-2026-06-01'];
+
+  it('HTTP/SSE 原生解码、WS 构造方式与非流式解码均与 Astra 基线逐字节一致', () => {
+    for (const model of FAMILY) {
+      const http = decodeAll(new OpenAIResponsesFormat(model, undefined, true), sseEvents('resp_a', PHASE_OUTPUT));
+      expect(JSON.stringify(http), model).toBe(JSON.stringify(BASELINE_ASTRA_STREAM_PHASE));
+      const ws = decodeAll(new OpenAIResponsesFormat(model), sseEvents('resp_w', PHASE_OUTPUT));
+      expect(JSON.stringify(ws), model).toBe(JSON.stringify(BASELINE_ASTRA_WS_STREAM_PHASE));
+      const decoded = new OpenAIResponsesFormat(model, undefined, true).decodeResponse(structuredClone({ id: 'resp_a', output: PHASE_OUTPUT }));
+      expect(JSON.stringify(decoded), model).toBe(JSON.stringify(BASELINE_ASTRA_DECODE_PHASE));
+    }
+  });
+
+  it('原生解码附加 nativeEvent 与 completedContents', () => {
+    const chunks = decodeAll(new OpenAIResponsesFormat('gpt-6-luna', undefined, true), sseEvents('resp_l', PHASE_OUTPUT));
+    expect(chunks[0].nativeEvent).toEqual({ type: 'response.created', responseId: 'resp_l' });
+    expect(chunks.at(-1).nativeEvent).toMatchObject({ type: 'response.completed', responseId: 'resp_l' });
+    expect(Array.isArray(chunks.at(-1).completedContents)).toBe(true);
+  });
+
+  it('网关别名不按 GPT-6 家族处理：没有原生事件，带 phase 的文本仍按 B6 附带 outputItem', () => {
+    for (const model of ['gpt-6-sol-xhigh', '[az]gpt-6-luna', 'gpt-6-astra-pro', 'gpt-6']) {
+      const chunks = decodeAll(new OpenAIResponsesFormat(model, undefined, true), sseEvents('resp_1', PHASE_OUTPUT));
+      expect(chunks.some(chunk => chunk.nativeEvent || chunk.completedContents), model).toBe(false);
+      const withoutPhase = chunks.map(({ outputItem: _outputItem, ...rest }) => rest);
+      expect(JSON.stringify(withoutPhase), model).toBe(JSON.stringify(BASELINE_STREAM_NO_PHASE));
+      expect(chunks.filter(chunk => chunk.outputItem).map(chunk => chunk.outputItem.phase), model).toEqual(['commentary', 'commentary']);
+    }
+  });
+});
