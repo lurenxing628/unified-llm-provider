@@ -235,7 +235,7 @@ describe('format bridge', () => {
     ]);
   });
 
-  it('工具响应多模态在 OpenAI-compatible 中保留图片 image_url 和文档 file', () => {
+  it('工具响应多模态在 OpenAI-compatible 中：tool 消息只放文字，图片 image_url 和文档 file 放到其后的 user 消息', () => {
     const raw = convertRequest({
       contents: [
         { role: 'model', parts: [{ functionCall: { name: 'get_weather', args: {}, callId: 'call_1' } }] },
@@ -256,11 +256,17 @@ describe('format bridge', () => {
       ],
     }, { from: 'unified', to: 'openai-compatible', model: 'gpt-4o' }) as any;
 
-    expect(raw.messages[1]).toMatchObject({
+    // OpenAI 文档：“For tool messages, only type `text` is supported”
+    // https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create/
+    expect(raw.messages[1]).toEqual({
       role: 'tool',
       tool_call_id: 'call_1',
+      content: '{"temperature":"15 degrees"}',
+    });
+    expect(raw.messages[2]).toEqual({
+      role: 'user',
       content: [
-        { type: 'text', text: '{"temperature":"15 degrees"}' },
+        { type: 'text', text: '[The following 2 attachments belong to the result of tool call "get_weather" (tool_call_id: call_1).]' },
         { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,aW1n' } },
         { type: 'file', file: { file_data: 'data:application/pdf;base64,JVBERi0=' } },
       ],

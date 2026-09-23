@@ -12,6 +12,9 @@ import { readFixture } from './openai-compatible-helpers.js';
  * 只有下面登记的组合允许变化，且每一项都有单独的测试说明新行为与依据。
  */
 const INTENTIONAL_CHANGES: Record<string, string> = {
+  // A6：OpenAI 文档 “For tool messages, only type `text` is supported”，图片移到 tool 消息之后的 user 消息。
+  'tool-result-media|openai-compatible|nostream': 'A6',
+  'tool-result-media|openai-compatible|stream': 'A6',
 };
 
 const requests = JSON.parse(readFixture('requests.json')) as Record<string, LLMRequest>;

@@ -36,10 +36,26 @@ export class OpenAICompatibleFormat implements FormatAdapter {
     // contents → messages
     const pendingToolCallIds: string[] = [];
     let generatedToolCallIdCounter = 0;
+    // Chat Completions 要求 assistant 的 tool_calls 之后紧跟全部 tool 消息，tool 消息之间不能插 user 消息。
+    // 与工具结果同处一条内容的文字/媒体，以及 tool 消息放不下的工具结果媒体，都先暂存，
+    // 等这一批 tool 消息结束（下一条非 tool 消息之前或末尾）再作为一条 user 消息发出。
+    let deferredUserBlocks: Record<string, unknown>[] = [];
+    const flushDeferredUserBlocks = () => {
+      if (deferredUserBlocks.length === 0) return;
+      const blocks = deferredUserBlocks;
+      deferredUserBlocks = [];
+      messages.push({
+        role: 'user',
+        content: blocks.every(block => block.type === 'text')
+          ? blocks.map(block => block.text as string).join('')
+          : blocks,
+      });
+    };
     for (const content of request.contents) {
       const textParts = content.parts.filter(isVisibleTextPart);
       const funcCallParts = content.parts.filter(isFunctionCallPart);
       const funcRespParts = content.parts.filter(isFunctionResponsePart);
+      if (content.role === 'model' || funcRespParts.length === 0) flushDeferredUserBlocks();
 
       if (content.role === 'model') {
         // 提取 thinking/reasoning 内容（thought: true 的 text parts）
@@ -82,10 +98,12 @@ export class OpenAICompatibleFormat implements FormatAdapter {
         }
       } else {
         if (funcRespParts.length > 0) {
-          for (let i = 0; i < funcRespParts.length; i++) {
-            const part = funcRespParts[i];
+          for (const part of content.parts) {
             if (!isFunctionResponsePart(part)) {
-              throw new Error('unreachable');
+              // A5：同一条内容里的文字/图片/文件不再丢弃，放到这一批 tool 消息之后的 user 消息里。
+              const block = encodeUserContentBlock(part);
+              if (block) deferredUserBlocks.push(block);
+              continue;
             }
             const callId = consumeCallId({
               explicit: part.functionResponse.callId,
@@ -93,11 +111,29 @@ export class OpenAICompatibleFormat implements FormatAdapter {
               providerLabel: 'OpenAI Compatible',
               toolName: part.functionResponse.name,
             });
+            if (this.providerKind === 'deepseek') {
+              // DeepSeek 文档：tool 消息 content 可以是含 image_url / file 的数组，保持原样。
+              messages.push({
+                role: 'tool',
+                tool_call_id: callId,
+                content: encodeOpenAICompatibleToolResultContent(part.functionResponse),
+              });
+              continue;
+            }
+            // A6：OpenAI 文档 “For tool messages, only type `text` is supported”。
+            // tool 消息只放文字；图片/文件移到这一批 tool 消息之后的 user 消息，并注明来自哪个调用。
             messages.push({
               role: 'tool',
               tool_call_id: callId,
-              content: encodeOpenAICompatibleToolResultContent(part.functionResponse),
+              content: JSON.stringify(part.functionResponse.response),
             });
+            const mediaBlocks = encodeToolResultMediaBlocks(part.functionResponse);
+            if (mediaBlocks.length > 0) {
+              deferredUserBlocks.push(
+                { type: 'text', text: describeToolResultAttachments(part.functionResponse.name, callId, mediaBlocks.length) },
+                ...mediaBlocks,
+              );
+            }
           }
         } else {
           const contentBlocks: Record<string, unknown>[] = [];
@@ -139,6 +175,8 @@ export class OpenAICompatibleFormat implements FormatAdapter {
         }
       }
     }
+
+    flushDeferredUserBlocks();
 
     // 组装请求体
     const body: Record<string, unknown> = { model: this.model, messages };
@@ -837,11 +875,30 @@ function encodeOpenAICompatibleToolMediaBlock(part: NonNullable<FunctionResponse
   return undefined;
 }
 
-function encodeOpenAICompatibleToolResultContent(response: FunctionResponsePart['functionResponse']): unknown {
-  const text = JSON.stringify(response.response);
-  const mediaBlocks = (response.parts ?? [])
+function encodeToolResultMediaBlocks(response: FunctionResponsePart['functionResponse']): Record<string, unknown>[] {
+  return (response.parts ?? [])
     .map(part => encodeOpenAICompatibleToolMediaBlock(part))
     .filter((block): block is Record<string, unknown> => !!block);
+}
+
+function describeToolResultAttachments(name: string, callId: string, count: number): string {
+  const subject = count === 1 ? 'The following attachment belongs' : `The following ${count} attachments belong`;
+  return `[${subject} to the result of tool call "${name}" (tool_call_id: ${callId}).]`;
+}
+
+/** user 内容里可以随工具结果一起出现的块：可见文字、图片、文档；其余类型与普通 user 消息一样忽略。 */
+function encodeUserContentBlock(part: Part): Record<string, unknown> | undefined {
+  if (isTextPart(part)) {
+    return part.thought !== true && part.text ? { type: 'text', text: part.text } : undefined;
+  }
+  if (isInlineDataPart(part)) return encodeOpenAICompatibleToolMediaBlock(part);
+  return undefined;
+}
+
+/** DeepSeek：tool 消息可带图片 / 文件（DeepSeek API 文档），文字 + 媒体数组保持原样。 */
+function encodeOpenAICompatibleToolResultContent(response: FunctionResponsePart['functionResponse']): unknown {
+  const text = JSON.stringify(response.response);
+  const mediaBlocks = encodeToolResultMediaBlocks(response);
 
   if (mediaBlocks.length === 0) return text;
   return [
