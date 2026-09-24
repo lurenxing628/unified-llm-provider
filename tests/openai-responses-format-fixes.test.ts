@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { OpenAIResponsesFormat } from '../src/index.js';
+import { OpenAIResponsesFormat, processStreamResponse } from '../src/index.js';
 import type { LLMRequest } from '../src/index.js';
 
 // ---- 与 /tmp/api-research/responses/sse.mjs 同形的脚本化 SSE 事件 ----
@@ -1807,5 +1807,37 @@ describe('非流式：GPT-6 家族的 assistant message 与其他模型一样保
         { type: 'message', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text: 'Let me check.' }] },
       ]);
     }
+  });
+});
+
+describe('response.incomplete 在 HTTP/SSE 上按错误上报', () => {
+  // response 层（isProviderErrorPayload）把事件名或 type 含 incomplete 的 SSE 事件当作上游错误，
+  // 在格式适配器之前就返回 stream_error，所以原生解码里为 response.incomplete 产出 nativeEvent 的分支
+  // 走不到，已删除。这与 LimCode WebSocket 原生会话一致：只有 WS 上的 steered 边界不算失败，其余
+  // incomplete（如 max_output_tokens）都按失败处理。
+  const incompleteEvent = {
+    type: 'response.incomplete',
+    response: {
+      id: 'resp_inc', object: 'response', status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      output: [msg('1', 'Partial answer')],
+      usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 },
+    },
+  };
+
+  it('原生解码的 GPT-6 家族 SSE 流：response.incomplete 只产生一个 stream_error，没有 response.incomplete 原生事件', async () => {
+    const events = sseEvents('resp_inc', [msg('1', 'Partial answer')]).slice(0, -1);
+    const body = [...events, incompleteEvent].map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('');
+    const res = new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    const chunks: any[] = [];
+    for await (const chunk of processStreamResponse(res, new OpenAIResponsesFormat('gpt-6-sol', undefined, true))) chunks.push(chunk);
+    expect(chunks.filter(chunk => chunk.error).map(chunk => chunk.error.kind)).toEqual(['stream_error']);
+    expect(chunks.at(-1).error.event).toBe('response.incomplete');
+    expect(chunks.some(chunk => chunk.nativeEvent?.type === 'response.incomplete')).toBe(false);
+  });
+
+  it('格式适配器本身不再为 response.incomplete 产出原生事件', () => {
+    const format = new OpenAIResponsesFormat('gpt-6-astra', undefined, true);
+    expect(format.decodeStreamChunk(structuredClone(incompleteEvent), format.createStreamState())).toEqual({});
   });
 });

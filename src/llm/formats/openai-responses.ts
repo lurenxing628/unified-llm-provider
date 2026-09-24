@@ -98,8 +98,9 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
 
   /**
    * limcodeNativeEvents：仅 LimCode HTTP/SSE 原生路径开启。开启且模型属于 GPT-6 家族（精确 id）时，
-   * 解码在 chunk 上附加 nativeEvent/completedContents（无 WS 物理身份）。LimCode 自带的
-   * WebSocket 会话直接构造本类且不开启此模式，WS 上的权威 nativeEvent 由会话自身产出。
+   * 解码在 chunk 上附加 nativeEvent（response.created / response.completed）与 completedContents
+   * （无 WS 物理身份）。response.incomplete 在 SSE 上由 response 层按 stream_error 上报，不产出原生事件。
+   * LimCode 自带的 WebSocket 会话直接构造本类且不开启此模式，WS 上的权威 nativeEvent 由会话自身产出。
    */
   constructor(private model: string, promptCache?: LLMPromptCacheConfig, private readonly limcodeNativeEvents = false) {
     this.promptCache = normalizeOpenAIResponsesPromptCacheConfig(promptCache);
@@ -453,23 +454,8 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
           };
         }
       }
-    } else if (event === 'response.incomplete') {
-      if (this.limcodeGpt6Native) {
-        const response = data.response ?? data;
-        const responseId = response?.id;
-        if (typeof responseId === 'string' && responseId) {
-          const usage = response?.usage ?? data.usage;
-          chunk.nativeEvent = {
-            type: 'response.incomplete',
-            responseId,
-            ...(typeof response?.status_details?.reason === 'string' && response.status_details.reason
-              ? { reason: response.status_details.reason }
-              : {}),
-            ...(usage ? { usage } : {}),
-          };
-        }
-      }
     } else if (event === 'response.output_item.added') {
+      // response.incomplete 没有分支：response 层把它当作上游错误，在这里之前就返回 stream_error。
       if (this.limcodeGpt6Native) attachLimcodeOutputItem(chunk, data);
       else if (!isLimcodeGpt6FamilyModel(this.model)) rememberAssistantMessagePhase(streamState, data);
       const item = data.item;

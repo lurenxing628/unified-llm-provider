@@ -169,8 +169,9 @@ export interface LLMStreamChunk {
   rawChunk?: unknown;
   /**
    * LimCode Astra 扩展：response 生命周期观察。HTTP/SSE 原生解码模式只产出
-   * created/completed/incomplete（无 WS 物理身份）；完整事件面（含 steering 与连接代）
-   * 由 LimCode WebSocket 会话在自身 chunk 上权威产出，字段形状与 shared 原生事件保持一致。
+   * created/completed（无 WS 物理身份）；SSE 上的 response.incomplete 由 response 层按 stream_error
+   * 上报。完整事件面（含 steered incomplete、steering 与连接代）由 LimCode WebSocket 会话在自身 chunk
+   * 上权威产出，字段形状与 shared 原生事件保持一致。
    */
   nativeEvent?: {
     type: 'response.created' | 'response.completed' | 'response.incomplete'
