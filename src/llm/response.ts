@@ -58,6 +58,10 @@ function createErrorStreamChunk(error: LLMRawErrorInfo): LLMStreamChunk {
   };
 }
 
+function isNonRetryableError(err: unknown): boolean {
+  return err instanceof Error && (err as Error & { retryable?: unknown }).retryable === false;
+}
+
 function stringField(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
@@ -161,6 +165,8 @@ export async function processResponse(
       bodyText,
       rawBody: rawResponse,
       message: stringifyError(err),
+      // 格式适配器可以在抛出的错误上标明不可重试（如 finish_reason=length 截断的工具参数）。
+      ...(isNonRetryableError(err) ? { retryable: false } : {}),
     }));
   }
 }

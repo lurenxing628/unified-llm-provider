@@ -648,7 +648,12 @@ function createToolArgumentsErrorChunk(
     .map(({ entry, problem }) => describeToolArgumentsProblem(entry.name, entry.callId, entry.arguments, problem, finishReason, streamEnd))
     .join('\n');
   return {
-    error: { kind: 'decode_error', message, rawChunk },
+    error: {
+      kind: 'decode_error',
+      message,
+      rawChunk,
+      ...(isOutputLimitFinishReason(finishReason) ? { retryable: false } : {}),
+    },
     rawChunk,
     ...(finishReason ? { finishReason } : {}),
   };
@@ -830,6 +835,22 @@ function createFinishReasonErrorResponse(data: any, choice: any): LLMResponse {
 }
 
 /**
+ * finish_reason "length"：输出达到请求里的 token 上限（OpenAI Chat Completions：“the maximum number of
+ * tokens specified in the request was reached”）。原样重发会在同一上限处再次截断，所以这种截断造成的
+ * 工具参数错误带 retryable:false，调用方的重试策略不应整包重发。
+ */
+function isOutputLimitFinishReason(finishReason: string | undefined): boolean {
+  return finishReason === 'length';
+}
+
+/** 非流式解码抛出的工具参数错误；带 retryable 时由 response 层原样写进 decode_error。 */
+function toolArgumentsDecodeError(message: string, finishReason: string | undefined): Error {
+  const error = new Error(message);
+  if (isOutputLimitFinishReason(finishReason)) Object.assign(error, { retryable: false });
+  return error;
+}
+
+/**
  * 非流式 tool_calls[].function.arguments 解码。
  *
  * OpenAI 文档：arguments 是模型生成的 JSON 字符串，“the model does not always generate valid JSON”
@@ -842,7 +863,7 @@ function decodeNonStreamToolArguments(tc: any, finishReason?: string): Record<st
   if (raw === undefined || raw === null) return {};
   if (typeof raw === 'object') {
     if (Array.isArray(raw)) {
-      throw new Error(describeToolArgumentsProblem(tc?.function?.name, tc?.id, JSON.stringify(raw), 'not_object', finishReason));
+      throw toolArgumentsDecodeError(describeToolArgumentsProblem(tc?.function?.name, tc?.id, JSON.stringify(raw), 'not_object', finishReason), finishReason);
     }
     return raw as Record<string, unknown>;
   }
@@ -851,7 +872,7 @@ function decodeNonStreamToolArguments(tc: any, finishReason?: string): Record<st
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error(describeToolArgumentsProblem(tc?.function?.name, tc?.id, text, 'incomplete', finishReason));
+    throw toolArgumentsDecodeError(describeToolArgumentsProblem(tc?.function?.name, tc?.id, text, 'incomplete', finishReason), finishReason);
   }
 }
 

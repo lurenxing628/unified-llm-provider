@@ -291,3 +291,53 @@ describe('OpenAI 兼容非流式 tool_calls 参数容错（A2）', () => {
     expect(plain(decoded)).toEqual(readBaseline('claude-noargs-nostream.json'));
   });
 });
+
+describe('finish_reason=length 截断的工具参数错误标为不可重试', () => {
+  // OpenAI Chat Completions：finish_reason "length" 表示 “the maximum number of tokens specified in the
+  // request was reached”。原样重发会再次在同一输出上限处截断，所以错误带 retryable:false，
+  // 调用方的重试策略不应整包重发。其他原因的解析失败（没有 finish_reason、tool_calls 等）不标记。
+  it('流式：finish_reason=length 的截断错误带 retryable:false', async () => {
+    const chunks = await decodeStream(sse(
+      chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'write_file', arguments: '{"path":"a.txt","content":"hel' } }] }),
+      chatChunk({}, { finish_reason: 'length' }),
+      '[DONE]',
+    ));
+    expect(chunks.at(-1)?.error).toMatchObject({ kind: 'decode_error', retryable: false });
+  });
+
+  it('流式：没有 finish_reason 的截断（流结束时参数仍不完整）不标记 retryable', async () => {
+    const chunks = await decodeStream(sse(
+      chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":' } }] }),
+      '[DONE]',
+    ));
+    expect(chunks.at(-1)?.error?.kind).toBe('decode_error');
+    expect(chunks.at(-1)?.error).not.toHaveProperty('retryable');
+  });
+
+  it('非流式：finish_reason=length 且参数无法解析时 decode_error 带 retryable:false', async () => {
+    const decoded = await decodeJson({
+      id: 'chatcmpl-test',
+      object: 'chat.completion',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: null, tool_calls: [{ id: 'call_a', type: 'function', function: { name: 'write_file', arguments: '{"path":"a' } }] },
+        finish_reason: 'length',
+      }],
+    });
+    expect(decoded.error).toMatchObject({ kind: 'decode_error', retryable: false });
+  });
+
+  it('非流式：其他原因的参数解析失败不标记 retryable', async () => {
+    const decoded = await decodeJson({
+      id: 'chatcmpl-test',
+      object: 'chat.completion',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: null, tool_calls: [{ id: 'call_a', type: 'function', function: { name: 'write_file', arguments: '{"path":"a' } }] },
+        finish_reason: 'tool_calls',
+      }],
+    });
+    expect(decoded.error?.kind).toBe('decode_error');
+    expect(decoded.error).not.toHaveProperty('retryable');
+  });
+});
