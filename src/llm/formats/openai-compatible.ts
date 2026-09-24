@@ -789,7 +789,8 @@ function accumulateReasoningDetails(target: Record<string, unknown>[], incoming:
  * 已经返回 200 之后发生的错误，流式以一个 `finish_reason: "error"` 的块终止流，非流式把 error
  * 放在 choice 里并带 `finish_reason: "error"`；choice 上可能带 `native_finish_reason`
  * （如 Gemini 的 MALFORMED_FUNCTION_CALL）。顶层带 `error` 的块已由 response 层按 stream_error
- * 处理；这里补上只有 `finish_reason: "error"` 的情况，按错误上报而不是当作正常结束。
+ * 处理（此后 response 层不再调用 finalizeStream）；这里补上只有 `finish_reason: "error"` 的情况，
+ * 按错误上报而不是当作正常结束。
  */
 function describeFinishReasonError(data: any, choice: any): { message: string; code?: string } {
   const nativeFinishReason = typeof choice?.native_finish_reason === 'string' && choice.native_finish_reason

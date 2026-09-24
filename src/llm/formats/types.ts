@@ -36,7 +36,8 @@ export interface FormatAdapter {
    *
    * 用于上游没有给出结束信号（如缺少 finish_reason）时，把仍在 state 里等待的内容
    * （未发出的工具调用、跨块累积的签名等）交给调用方。没有需要补发的内容时返回 undefined，
-   * 此时流的输出与未实现该钩子时完全一致。读取中断（stream_read_error）时不会调用。
+   * 此时流的输出与未实现该钩子时完全一致。读取中断（stream_read_error）或流里已经发出过错误块
+   * （上游错误事件、非 JSON 数据、解码失败、适配器自己的错误块）时不会调用。
    * 调用时 `state.streamEnd` 标明流是以 [DONE] 结束还是在没有 [DONE] 的情况下 EOF。
    */
   finalizeStream?(state: StreamDecodeState): LLMStreamChunk | undefined;

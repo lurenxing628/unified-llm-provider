@@ -53,6 +53,46 @@ describe('OpenAI 兼容 finish_reason:"error"（A3）', () => {
     expect(chunks[0].error?.message).toBeUndefined();
   });
 
+  it('带顶层 error 的中途错误块之后，流结束时不再补发工具调用、解码错误或签名信封', async () => {
+    // OpenRouter 文档的中途错误块同时带顶层 error 和 finish_reason:"error"。它由 response 层按 stream_error
+    // 拦下，格式适配器看不到这一块；流此后已经失败，不能再补发任何内容。
+    const payload = {
+      id: 'gen-abc123',
+      object: 'chat.completion.chunk',
+      created: 1,
+      model: 'google/gemini-3.5-flash',
+      provider: 'Google',
+      error: { code: 502, message: 'Provider disconnected mid-stream' },
+      choices: [{ index: 0, delta: { content: '' }, finish_reason: 'error' }],
+    };
+    for (const end of [['[DONE]'], []]) {
+      const chunks = await decodeStream(sse(
+        chatChunk({ reasoning: 'thinking', reasoning_details: [{ type: 'reasoning.text', text: 'thinking', index: 0 }] }),
+        chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'list_items', arguments: '' } }] }),
+        chatChunk({ tool_calls: [{ index: 1, id: 'call_2', type: 'function', function: { name: 'read_file', arguments: '{"path":' } }] }),
+        payload,
+        ...end,
+      ));
+      const errors = chunks.filter(chunk => chunk.error);
+      expect(errors, `end=${end.join()}`).toHaveLength(1);
+      expect(errors[0].error).toMatchObject({ kind: 'stream_error', rawChunk: payload });
+      expect(chunks[chunks.length - 1], `end=${end.join()}`).toBe(errors[0]);
+      // list_items 在 call_2 出现时已按“下一个调用出现”规则发出；错误之后不再补发 read_file 或签名信封。
+      expect(functionCallsOf(chunks).map(call => call.name)).toEqual(['list_items']);
+      expect(chunks.some(chunk => chunk.thoughtSignature)).toBe(false);
+    }
+  });
+
+  it('SSE data 不是 JSON 时（stream_parse_error）同样不再补发', async () => {
+    const chunks = await decodeStream(sse(
+      chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'list_items', arguments: '' } }] }),
+      '{not json',
+      '[DONE]',
+    ));
+    expect(chunks.filter(chunk => chunk.error).map(chunk => chunk.error?.kind)).toEqual(['stream_parse_error']);
+    expect(functionCallsOf(chunks)).toEqual([]);
+  });
+
   it('非流式 choice 带 finish_reason:"error" 时返回 response_error 而不是空的成功回复', async () => {
     const body = {
       id: 'gen-abc',

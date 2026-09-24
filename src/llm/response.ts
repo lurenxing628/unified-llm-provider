@@ -199,11 +199,14 @@ export async function* processStreamResponse(
   };
   let lastPayload: unknown;
   let streamCompleted = false;
+  // 流里已经发出过错误块（上游错误事件、非 JSON 数据、解码失败或适配器自己的错误块）。
+  let emittedErrorChunk = false;
   const sseEnd: SSEEnd = { receivedDone: false };
   try {
     for await (const sse of parseSSE(res, sseEnd)) {
       const parsed = tryParseJson(sse.data);
       if (!parsed.ok) {
+        emittedErrorChunk = true;
         yield observed(createErrorStreamChunk({
           kind: 'stream_parse_error',
           status: res.status,
@@ -226,6 +229,7 @@ export async function* processStreamResponse(
       }));
 
       if (isProviderErrorPayload(payload, sse.event)) {
+        emittedErrorChunk = true;
         yield observed(createErrorStreamChunk({
           kind: 'stream_error',
           status: res.status,
@@ -241,10 +245,12 @@ export async function* processStreamResponse(
       lastPayload = payload;
       try {
         const chunk = withHttpErrorContext(format.decodeStreamChunk(payload, state));
+        if (chunk.error) emittedErrorChunk = true;
         yield observeLlmObject(chunk, getLlmResponseObserver(res), () => ({
           kind: 'decoded', parent: getLlmObservation(payload), value: chunk,
         }));
       } catch (err) {
+        emittedErrorChunk = true;
         yield observed(createErrorStreamChunk({
           kind: 'decode_error',
           status: res.status,
@@ -269,7 +275,9 @@ export async function* processStreamResponse(
   }
 
   // 流正常结束（[DONE] 或 EOF）后给格式适配器一次补发机会；读取中断时流不完整，不补发。
-  if (!streamCompleted || typeof format.finalizeStream !== 'function') return;
+  // 已经发出过错误块的流（例如 OpenRouter 带顶层 error 和 finish_reason:"error" 的中途错误块，
+  // 它在这里就被拦下，格式适配器看不到）已经失败，不再补发待定的工具调用、截断错误或签名信封。
+  if (!streamCompleted || emittedErrorChunk || typeof format.finalizeStream !== 'function') return;
   // 告诉格式适配器流是否以 [DONE] 结束：没有 [DONE] 的 EOF 可能是连接在工具参数发完之前断开。
   state.streamEnd = sseEnd.receivedDone ? 'done' : 'eof';
   const parent = getLlmObservation(lastPayload);
