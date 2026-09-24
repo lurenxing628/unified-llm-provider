@@ -10,6 +10,12 @@ import { LLMCompactResponse, LLMRequest, LLMResponse, LLMStreamChunk } from '../
 /** 流式解码跨 chunk 状态（如 OpenAI tool_call 分片累积） */
 export interface StreamDecodeState {
   [key: string]: unknown;
+  /**
+   * 流怎样结束，由 processStreamResponse 在调用 finalizeStream 之前写入：
+   * `done` 表示收到了 `data: [DONE]`；`eof` 表示连接在没有 [DONE] 的情况下结束。
+   * 放在 state 上而不是作为参数传入，这样包装 finalizeStream(state) 的调用方不需要改动也能传到。
+   */
+  streamEnd?: 'done' | 'eof';
 }
 
 export interface FormatAdapter {
@@ -31,6 +37,7 @@ export interface FormatAdapter {
    * 用于上游没有给出结束信号（如缺少 finish_reason）时，把仍在 state 里等待的内容
    * （未发出的工具调用、跨块累积的签名等）交给调用方。没有需要补发的内容时返回 undefined，
    * 此时流的输出与未实现该钩子时完全一致。读取中断（stream_read_error）时不会调用。
+   * 调用时 `state.streamEnd` 标明流是以 [DONE] 结束还是在没有 [DONE] 的情况下 EOF。
    */
   finalizeStream?(state: StreamDecodeState): LLMStreamChunk | undefined;
 

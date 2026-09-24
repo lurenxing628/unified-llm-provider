@@ -443,7 +443,9 @@ export class OpenAICompatibleFormat implements FormatAdapter {
    *
    * 1. 工具调用：部分网关（实测：把 Chat Completions 转成其他协议的中转）在工具调用流里不发
    *    finish_reason，最后一个调用（尤其是 arguments 为空串的无参数调用）永远等不到输出信号。
-   *    流已正常结束时，空参数按 `{}` 发出；参数 JSON 不完整的调用视为被截断，返回解码错误块。
+   *    收到 `data: [DONE]`（state.streamEnd === 'done'）时流确实已经结束，空参数按 `{}` 发出；
+   *    没有 [DONE] 的 EOF 可能是连接在参数发完之前断开，只收到工具名的调用不按 `{}` 补发
+   *    （否则参数全可选的工具会以空参数真的执行），与参数 JSON 不完整的调用一样按截断返回解码错误块。
    * 2. OpenRouter reasoning_details：整条流累积完成后才完整（签名、加密块常在正文或工具调用之后
    *    才到），所以只在这里作为一个仅含签名的思考 part 发出一次，与官方 AI SDK 在 finish 时给出
    *    完整 reasoning_details 的做法一致。
@@ -467,10 +469,13 @@ export class OpenAICompatibleFormat implements FormatAdapter {
     }
 
     if (pending.size > 0) {
+      const receivedDone = streamState.streamEnd === 'done';
       const failures: FailedStreamToolCall[] = [];
       for (const [, entry] of pending) {
-        const problem = emitStreamToolCall(chunk, entry, { allowEmptyArgs: true });
+        const problem = emitStreamToolCall(chunk, entry, { allowEmptyArgs: receivedDone });
         if (problem) failures.push({ entry, problem });
+        // 没有 [DONE] 时空参数调用不会被发出：它的参数可能还没到，按截断上报。
+        else if (!entry.emitted && entry.name) failures.push({ entry, problem: 'incomplete' });
       }
       pending.clear();
       streamState.lastToolCallKey = undefined;
@@ -480,7 +485,7 @@ export class OpenAICompatibleFormat implements FormatAdapter {
             id: entry.callId,
             function: { name: entry.name, arguments: entry.arguments },
           })),
-        });
+        }, receivedDone ? 'done' : 'eof');
       }
     }
     return chunk.partsDelta?.length ? chunk : undefined;
@@ -619,12 +624,17 @@ function describeToolArgumentsProblem(
   rawArgs: string,
   problem: StreamToolArgumentsProblem,
   finishReason?: string,
+  streamEnd?: 'done' | 'eof',
 ): string {
   const call = describeToolCall(name, callId);
   if (problem === 'not_object') {
     return `工具调用 ${call} 的参数不是 JSON 对象：${previewToolArguments(rawArgs)}`;
   }
-  const reason = finishReason ? `finish_reason: ${finishReason}` : '流结束时仍未收到完整参数';
+  const reason = finishReason
+    ? `finish_reason: ${finishReason}`
+    : streamEnd === 'eof'
+      ? '连接在没有 finish_reason 和 [DONE] 的情况下结束，参数可能还没发完'
+      : '流结束时仍未收到完整参数';
   return `工具调用 ${call} 的参数 JSON 不完整，参数可能被截断（${reason}，已收到 ${rawArgs.length} 个字符）：${previewToolArguments(rawArgs)}`;
 }
 
@@ -632,9 +642,10 @@ function createToolArgumentsErrorChunk(
   failures: FailedStreamToolCall[],
   finishReason: string | undefined,
   rawChunk: unknown,
+  streamEnd?: 'done' | 'eof',
 ): LLMStreamChunk {
   const message = failures
-    .map(({ entry, problem }) => describeToolArgumentsProblem(entry.name, entry.callId, entry.arguments, problem, finishReason))
+    .map(({ entry, problem }) => describeToolArgumentsProblem(entry.name, entry.callId, entry.arguments, problem, finishReason, streamEnd))
     .join('\n');
   return {
     error: { kind: 'decode_error', message, rawChunk },

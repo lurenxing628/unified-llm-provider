@@ -125,11 +125,38 @@ describe('OpenAI 兼容流：结束时补发工具调用（A1）', () => {
     expect(chunks[chunks.length - 1].error?.message).toContain('不是 JSON 对象');
   });
 
-  it('EOF（没有 [DONE]）同样补发', async () => {
+  it('连接干净断开（没有 finish_reason 也没有 [DONE]）时，只收到工具名的调用按参数截断报错，不按 {} 补发', async () => {
+    // Chat Completions 流以 `data: [DONE]` 结束（OpenAI OpenAPI：stream_options.include_usage
+    // “an additional chunk will be streamed before the data: [DONE] message”）。没有 [DONE] 的 EOF
+    // 说明流没有正常结束，只收到工具名分片（arguments:""）的调用可能还没发完参数；按 {} 补发会让
+    // 参数全可选的工具（如 write_file）真的以空参数执行。
+    const chunks = await decodeStream(sse(
+      chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'write_file', arguments: '' } }] }),
+    ));
+    expect(functionCallsOf(chunks)).toEqual([]);
+    const last = chunks[chunks.length - 1];
+    expect(last.error).toMatchObject({ kind: 'decode_error', status: 200 });
+    expect(last.error?.message).toContain('"write_file"');
+    expect(last.error?.message).toContain('call_1');
+    expect(last.error?.message).toContain('参数可能被截断');
+    expect(last.error?.message).toContain('[DONE]');
+  });
+
+  it('连接干净断开时，参数已完整、已在流中发出的调用不受影响，也不追加错误块', async () => {
+    const chunks = await decodeStream(sse(
+      chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a"}' } }] }),
+    ));
+    expect(functionCallsOf(chunks)).toEqual([{ name: 'read_file', args: { path: 'a' }, callId: 'call_1' }]);
+    expect(chunks.some(chunk => chunk.error)).toBe(false);
+  });
+
+  it('收到 [DONE] 后，只收到工具名的调用仍按 {} 补发（无参数调用）', async () => {
     const chunks = await decodeStream(sse(
       chatChunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'list_items', arguments: '' } }] }),
+      '[DONE]',
     ));
     expect(functionCallsOf(chunks)).toEqual([{ name: 'list_items', args: {}, callId: 'call_1' }]);
+    expect(chunks.some(chunk => chunk.error)).toBe(false);
   });
 
   it('读取中断时流不完整，不补发调用（只返回 stream_read_error）', async () => {

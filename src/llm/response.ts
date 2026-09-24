@@ -199,8 +199,9 @@ export async function* processStreamResponse(
   };
   let lastPayload: unknown;
   let streamCompleted = false;
+  const sseEnd: SSEEnd = { receivedDone: false };
   try {
-    for await (const sse of parseSSE(res)) {
+    for await (const sse of parseSSE(res, sseEnd)) {
       const parsed = tryParseJson(sse.data);
       if (!parsed.ok) {
         yield observed(createErrorStreamChunk({
@@ -269,6 +270,8 @@ export async function* processStreamResponse(
 
   // 流正常结束（[DONE] 或 EOF）后给格式适配器一次补发机会；读取中断时流不完整，不补发。
   if (!streamCompleted || typeof format.finalizeStream !== 'function') return;
+  // 告诉格式适配器流是否以 [DONE] 结束：没有 [DONE] 的 EOF 可能是连接在工具参数发完之前断开。
+  state.streamEnd = sseEnd.receivedDone ? 'done' : 'eof';
   const parent = getLlmObservation(lastPayload);
   let finalChunk: LLMStreamChunk | undefined;
   try {
@@ -295,11 +298,17 @@ export interface SSEChunk {
   data: string;
 }
 
+/** parseSSE 结束时写入：是否收到了 `data: [DONE]`（否则是没有 [DONE] 的 EOF）。 */
+interface SSEEnd {
+  receivedDone: boolean;
+}
+
 /**
  * 从 fetch Response 中解析 SSE 流，逐条 yield 包含 data 字段的原始字符串的对象。
- * 遇到 `data: [DONE]` 时自动结束。
+ * 遇到 `data: [DONE]` 时自动结束，并把 end.receivedDone 置为 true；
+ * `for await` 拿不到生成器的返回值，所以通过这个对象告诉调用方。
  */
-async function* parseSSE(response: Response): AsyncGenerator<SSEChunk> {
+async function* parseSSE(response: Response, end: SSEEnd): AsyncGenerator<SSEChunk> {
   const body = response.body;
   if (!body) throw new Error('Response body is null');
 
@@ -320,7 +329,10 @@ async function* parseSSE(response: Response): AsyncGenerator<SSEChunk> {
 
     const chunk = data ? { event, data } : undefined;
     observation?.dispatch(chunk, data, event);
-    if (data === '[DONE]') return 'done';
+    if (data === '[DONE]') {
+      end.receivedDone = true;
+      return 'done';
+    }
     return chunk;
   };
 
