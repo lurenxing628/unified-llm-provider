@@ -397,9 +397,11 @@ export class OpenAIResponsesFormat implements CompactFormatAdapter {
         const part = createReasoningPart(item, { includeText: true, includeSignature: true });
         if (part) parts.push(part);
       } else if (item.type === 'message') {
-        // B6：GPT-6 家族以外的模型的 assistant message 带 phase 时，文本 part 附带 outputItem
-        // （GPT-6 家族与 Astra 原生路径保持一致，不附加）。
-        const outputItem = isLimcodeGpt6FamilyModel(this.model) ? undefined : createAssistantPhaseOutputItem(item, index);
+        // B6：assistant message 带 phase 时，文本 part 附带 outputItem，GPT-6 家族也一样。
+        // 非流式没有原生事件和 completedContents，phase 只能从这里带出；官方要求所有 assistant
+        // message 都保留并回传 phase（https://developers.openai.com/api/reference/resources/responses：
+        // “preserve and resend phase on all assistant messages — dropping it can degrade performance”）。
+        const outputItem = createAssistantPhaseOutputItem(item, index);
         for (const block of item.content ?? []) {
           if (block.type === 'output_text') {
             parts.push(outputItem ? { text: block.text, outputItem: { ...outputItem } } : { text: block.text });

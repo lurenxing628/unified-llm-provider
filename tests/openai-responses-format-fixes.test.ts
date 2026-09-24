@@ -1077,6 +1077,17 @@ const BASELINE_ASTRA_DECODE_PHASE = {
   }
 };
 
+/** limcode.7：GPT-6 家族非流式解码与其他模型一样，给带 phase 的 message 文本附带 outputItem；其余字段与基线相同。 */
+const ASTRA_DECODE_PHASE_WITH_OUTPUT_ITEM = {
+  ...BASELINE_ASTRA_DECODE_PHASE,
+  content: {
+    ...BASELINE_ASTRA_DECODE_PHASE.content,
+    parts: BASELINE_ASTRA_DECODE_PHASE.content.parts.map((part: any) => (part.text === 'Let me check.'
+      ? { ...part, outputItem: { id: 'msg_1', ordinal: 1, phase: 'commentary' } }
+      : part)),
+  },
+};
+
 const BASELINE_ASTRA_WS_STREAM_PHASE = [
   {},
   {},
@@ -1206,8 +1217,9 @@ describe('OpenAIResponsesFormat 原行为不变（修复前基线逐字节比较
     expect(JSON.stringify(http)).toBe(JSON.stringify(BASELINE_ASTRA_STREAM_PHASE));
     const ws = decodeAll(new OpenAIResponsesFormat('gpt-6-astra'), sseEvents('resp_w', PHASE_OUTPUT));
     expect(JSON.stringify(ws)).toBe(JSON.stringify(BASELINE_ASTRA_WS_STREAM_PHASE));
+    // 非流式解码只多出带 phase 的 message 文本上的 outputItem（GPT-6 家族不再排除），其余与修复前逐字节一致。
     const decoded = new OpenAIResponsesFormat('gpt-6-astra', undefined, true).decodeResponse(structuredClone({ id: 'resp_a', output: PHASE_OUTPUT }));
-    expect(JSON.stringify(decoded)).toBe(JSON.stringify(BASELINE_ASTRA_DECODE_PHASE));
+    expect(JSON.stringify(decoded)).toBe(JSON.stringify(ASTRA_DECODE_PHASE_WITH_OUTPUT_ITEM));
   });
 });
 
@@ -1738,7 +1750,7 @@ describe('GPT-6 Sol / Luna 与 Astra 走同一条原生解码路径', () => {
       const ws = decodeAll(new OpenAIResponsesFormat(model), sseEvents('resp_w', PHASE_OUTPUT));
       expect(JSON.stringify(ws), model).toBe(JSON.stringify(BASELINE_ASTRA_WS_STREAM_PHASE));
       const decoded = new OpenAIResponsesFormat(model, undefined, true).decodeResponse(structuredClone({ id: 'resp_a', output: PHASE_OUTPUT }));
-      expect(JSON.stringify(decoded), model).toBe(JSON.stringify(BASELINE_ASTRA_DECODE_PHASE));
+      expect(JSON.stringify(decoded), model).toBe(JSON.stringify(ASTRA_DECODE_PHASE_WITH_OUTPUT_ITEM));
     }
   });
 
@@ -1756,6 +1768,44 @@ describe('GPT-6 Sol / Luna 与 Astra 走同一条原生解码路径', () => {
       const withoutPhase = chunks.map(({ outputItem: _outputItem, ...rest }) => rest);
       expect(JSON.stringify(withoutPhase), model).toBe(JSON.stringify(BASELINE_STREAM_NO_PHASE));
       expect(chunks.filter(chunk => chunk.outputItem).map(chunk => chunk.outputItem.phase), model).toEqual(['commentary', 'commentary']);
+    }
+  });
+});
+
+describe('非流式：GPT-6 家族的 assistant message 与其他模型一样保留 phase', () => {
+  // 依据：OpenAI Responses 参考 https://developers.openai.com/api/reference/resources/responses
+  // （phase：“preserve and resend phase on all assistant messages — dropping it can degrade performance”），
+  // 以及 https://developers.openai.com/api/docs/guides/reasoning#phase-parameter。
+  // 非流式没有原生事件和 completedContents，phase 只能随文本 part 的 outputItem 带出。
+  const MODELS = ['gpt-6-sol', 'gpt-6-astra', 'gpt-6-luna-2026-06-01', 'gpt-5.5', 'gpt-5.6-sol'];
+
+  it('decodeResponse 给带 phase 的 message 文本附带 outputItem，与模型无关', () => {
+    for (const model of MODELS) {
+      for (const native of [true, false]) {
+        const decoded = new OpenAIResponsesFormat(model, undefined, native).decodeResponse(structuredClone({ id: 'resp_1', output: PHASE_OUTPUT }));
+        expect(decoded.content.parts[1], `${model} native=${native}`).toEqual({
+          text: 'Let me check.',
+          outputItem: { id: 'msg_1', ordinal: 1, phase: 'commentary' },
+        });
+      }
+    }
+  });
+
+  it('解码结果回编时带回原 phase', () => {
+    for (const model of MODELS) {
+      const format = new OpenAIResponsesFormat(model, undefined, true);
+      const decoded = format.decodeResponse(structuredClone({ id: 'resp_1', output: PHASE_OUTPUT }));
+      const body = format.encodeRequest({
+        contents: [
+          { role: 'user', parts: [{ text: 'go' }] },
+          decoded.content,
+          { role: 'user', parts: [{ functionResponse: { name: 'read_file', response: { ok: 1 }, callId: 'call_1' } }] },
+        ],
+      }) as any;
+      const assistantMessages = body.input.filter((item: any) => item.type === 'message' && item.role === 'assistant');
+      expect(assistantMessages, model).toEqual([
+        { type: 'message', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text: 'Let me check.' }] },
+      ]);
     }
   });
 });
